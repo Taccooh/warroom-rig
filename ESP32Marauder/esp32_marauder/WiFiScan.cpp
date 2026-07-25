@@ -2024,7 +2024,7 @@ void WiFiScan::StartScan(uint8_t scan_mode, uint16_t color) {
 
   if (scan_mode == WIFI_SCAN_PROBE)
     RunProbeScan(scan_mode, color);
-  else if ((scan_mode == WIFI_SCAN_SAE_COMMIT) || (scan_mode == WIFI_ATTACK_SAE_COMMIT))
+  else if (scan_mode == WIFI_SCAN_SAE_COMMIT)
     RunSAEScan(scan_mode, color);
   else if (scan_mode == WIFI_SCAN_DETECT_FOLLOW) {
     #ifdef HAS_BT
@@ -2087,36 +2087,6 @@ void WiFiScan::StartScan(uint8_t scan_mode, uint16_t color) {
       RunPacketMonitor(scan_mode, color);
     //#endif
   }
-  else if (scan_mode == WIFI_ATTACK_BEACON_LIST)
-    this->startWiFiAttacks(scan_mode, color, text_table1[50]);
-  else if (scan_mode == WIFI_ATTACK_BEACON_SPAM)
-    this->startWiFiAttacks(scan_mode, color, text_table1[51]);
-  else if (scan_mode == WIFI_ATTACK_CSA)
-    this->startWiFiAttacks(scan_mode, color, "CSA Attack");
-  else if (scan_mode == WIFI_ATTACK_QUIET)
-   this->startWiFiAttacks(scan_mode, color, "Quiet Attack");
-  else if (scan_mode == WIFI_ATTACK_RICK_ROLL)
-    this->startWiFiAttacks(scan_mode, color, text_table1[52]);
-  else if (scan_mode == WIFI_ATTACK_FUNNY_BEACON)
-    this->startWiFiAttacks(scan_mode, color, text1_67);
-  else if (scan_mode == WIFI_ATTACK_AUTH)
-    this->startWiFiAttacks(scan_mode, color, text_table1[53]);
-  else if (scan_mode == WIFI_ATTACK_DEAUTH)
-    this->startWiFiAttacks(scan_mode, color, text_table4[8]);
-  else if (scan_mode == WIFI_ATTACK_DEAUTH_MANUAL)
-    this->startWiFiAttacks(scan_mode, color, text_table4[8]);
-  else if (scan_mode == WIFI_ATTACK_DEAUTH_TARGETED)
-    this->startWiFiAttacks(scan_mode, color, text_table4[47]);
-  else if (scan_mode == WIFI_ATTACK_BAD_MSG_TARGETED)
-    this->startWiFiAttacks(scan_mode, color, "Bad Msg Targ");
-  else if (scan_mode == WIFI_ATTACK_BAD_MSG)
-    this->startWiFiAttacks(scan_mode, color, "Bad Msg");
-  else if (scan_mode == WIFI_ATTACK_SLEEP)
-    this->startWiFiAttacks(scan_mode, color, "Sleep");
-  else if (scan_mode == WIFI_ATTACK_SLEEP_TARGETED)
-    this->startWiFiAttacks(scan_mode, color, "Sleep Targeted");
-  else if (scan_mode == WIFI_ATTACK_AP_SPAM)
-    this->startWiFiAttacks(scan_mode, color, " AP Beacon Spam ");
   else if ((scan_mode == BT_SCAN_ALL) ||
           (scan_mode == BT_SCAN_FOX_HUNT) ||
           (scan_mode == BT_SCAN_RAYBAN) ||
@@ -2132,22 +2102,6 @@ void WiFiScan::StartScan(uint8_t scan_mode, uint16_t color) {
 
     #ifdef HAS_BT
       RunBluetoothScan(scan_mode, color);
-    #endif
-  }
-  else if ((scan_mode == BT_ATTACK_SOUR_APPLE) ||
-           (scan_mode == BT_ATTACK_APPLE_JUICE)) {
-    #ifdef HAS_BT
-      RunSourApple(scan_mode, color);
-    #endif
-  }
-  else if ((scan_mode == BT_ATTACK_SWIFTPAIR_SPAM) || 
-           (scan_mode == BT_ATTACK_SPAM_ALL) ||
-           (scan_mode == BT_ATTACK_SAMSUNG_SPAM) ||
-           (scan_mode == BT_ATTACK_GOOGLE_SPAM) ||
-           (scan_mode == BT_ATTACK_FLIPPER_SPAM) ||
-           (scan_mode == BT_SPOOF_AIRTAG)) {
-    #ifdef HAS_BT
-      RunSwiftpairSpam(scan_mode, color);
     #endif
   }
   else if (scan_mode == BT_SCAN_SKIMMERS) {
@@ -2166,26 +2120,6 @@ void WiFiScan::StartScan(uint8_t scan_mode, uint16_t color) {
   else if (scan_mode == GPS_POI) {
     RunSetupGPSTracker(scan_mode);
   }
-  else if (scan_mode == WIFI_PING_SCAN)
-    RunPingScan(scan_mode, color);
-  else if (scan_mode == WIFI_ARP_SCAN)
-    RunPingScan(scan_mode, color);
-  else if (scan_mode == WIFI_PORT_SCAN_ALL)
-    RunPortScanAll(scan_mode, color);
-  else if (scan_mode == WIFI_SCAN_SSH)
-    RunPortScanAll(scan_mode, color);
-  else if (scan_mode == WIFI_SCAN_TELNET)
-    RunPortScanAll(scan_mode, color);
-  else if (scan_mode == WIFI_SCAN_SMTP)
-    RunPortScanAll(scan_mode, color);
-  else if (scan_mode == WIFI_SCAN_DNS)
-    RunPortScanAll(scan_mode, color);
-  else if (scan_mode == WIFI_SCAN_HTTP)
-    RunPortScanAll(scan_mode, color);
-  else if (scan_mode == WIFI_SCAN_HTTPS)
-    RunPortScanAll(scan_mode, color);
-  else if (scan_mode == WIFI_SCAN_RDP)
-    RunPortScanAll(scan_mode, color);
   else {
     #ifdef HAS_ACT_LED
       digitalWrite(ACT_LED_PIN, LOW);
