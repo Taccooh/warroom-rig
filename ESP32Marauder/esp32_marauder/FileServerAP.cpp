@@ -73,7 +73,7 @@ void FileServerAP::loadOptionalSettings() {
     uint8_t mac[6];
     WiFi.macAddress(mac);
     char ssid_buf[32];
-    snprintf(ssid_buf, sizeof(ssid_buf), "Marauder-Files-%02X%02X", mac[4], mac[5]);
+    snprintf(ssid_buf, sizeof(ssid_buf), "warroom-rig-Files-%02X%02X", mac[4], mac[5]);
     ssid = String(ssid_buf);
     password = String(DEFAULT_PASSWORD);
 
@@ -169,7 +169,7 @@ static String formatSize(uint32_t bytes) {
 static void writeListingHtml(Print& out, const String& dir_path) {
     out.print(F("<!doctype html><html><head><meta charset=utf-8>"
               "<meta name=viewport content='width=device-width,initial-scale=1'>"
-              "<title>Marauder Files</title>"
+              "<title>warroom-rig Files</title>"
               "<style>"
               "body{font:14px/1.4 -apple-system,Segoe UI,sans-serif;margin:1em;color:#222}"
               "h1{font-size:1.1em;margin:0 0 .5em}"
@@ -349,7 +349,7 @@ static void produceMoreBytes(ListingChunkState* s, size_t want) {
             case 0: {
                 s->pending += F("<!doctype html><html><head><meta charset=utf-8>"
                                 "<meta name=viewport content='width=device-width,initial-scale=1'>"
-                                "<title>Marauder Files</title>"
+                                "<title>warroom-rig Files</title>"
                                 "<style>"
                                 "body{font:14px/1.4 -apple-system,Segoe UI,sans-serif;margin:1em;color:#222}"
                                 "h1{font-size:1.1em;margin:0 0 .5em}"

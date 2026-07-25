@@ -535,7 +535,7 @@ bool WdgwarsUpload::sendMultipartPOST(WiFiClientSecure& client,
     client.print("Host: ");
     client.print(WDG_HOST);
     client.print("\r\n");
-    client.print("User-Agent: ESP32Marauder/WDGWarsUpload\r\n");
+    client.print("User-Agent: warroom-rig/WDGWarsUpload\r\n");
     client.print("X-API-Key: ");
     client.print(apikey);
     client.print("\r\n");
