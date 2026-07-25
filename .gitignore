@@ -1,0 +1,51 @@
+# Arduino-CLI build outputs
+build/
+build_artifacts/
+*.bin.tmp
+*.elf.tmp
+*.map
+*.hex.tmp
+
+# Upstream Marauder ballast (not needed for our fork's reproducible build).
+# Re-fetch from https://github.com/justcallmekoko/ESP32Marauder if needed.
+ESP32Marauder/pictures/
+ESP32Marauder/mechanical/
+ESP32Marauder/PCBs/
+ESP32Marauder/FlashFiles/
+ESP32Marauder/Release Bins/
+ESP32Marauder/Drivers/
+ESP32Marauder/MarauderOTA/
+ESP32Marauder/bootloaders/
+ESP32Marauder/schematics/
+ESP32Marauder/libraries/
+ESP32Marauder/C5_Py_Flasher_for_adapter/
+ESP32Marauder/C5_Py_Flasher_for_v8/
+ESP32Marauder/TestFile/
+ESP32Marauder/old_README.md
+ESP32Marauder/release_countdown.html
+ESP32Marauder/esp32_marauder/PreviousVersions/
+
+# Library subtree build artefacts
+libs/Custom*/build/
+libs/Custom*/.pio/
+libs/Custom*/.vscode/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local notes (uncomment to share, comment to keep private)
+# scratch/
+# *.local.md
+
+# Temp / cache
+*.log
+*.tmp
+*.bak

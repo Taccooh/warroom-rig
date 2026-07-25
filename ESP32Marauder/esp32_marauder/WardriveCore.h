@@ -1,0 +1,220 @@
+// WardriveCore.h
+//
+// Marauder v7 Core Mode — ESP-NOW-Wardrive-Aggregator.
+// Empfaengt Wardrive-Records (WiFi+BLE) von ESP32DualBandWardriver-Nodes,
+// reichert mit GPS an und schreibt Wigle-CSV-Lines auf die SD.
+//
+// Adapted from JCMK ESP32DualBandWardriver, MIT License,
+// Copyright (c) 2025 Just Call Me Koko.
+// Marauder integration: Phase 3, 2026-05-06.
+//
+// Komplett unter `#ifdef MARAUDER_CORE_MODE` Guard. Default-Build ohne Toggle
+// erzeugt keine Object-Code-Bytes aus diesem Header.
+
+#pragma once
+
+#ifndef WardriveCore_h
+#define WardriveCore_h
+
+#include "configs.h"
+
+#ifdef MARAUDER_CORE_MODE
+
+#include <Arduino.h>
+#include <esp_now.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+
+#include "WardriveCoreProtocol.h"
+
+// Defaults, falls in configs.h nicht ueberschrieben.
+#ifndef WARDRIVE_CORE_CHANNEL
+  #define WARDRIVE_CORE_CHANNEL 6
+#endif
+#ifndef WARDRIVE_CORE_MAX_NODES
+  // Defensiver Default nur falls configs.h ihn NICHT setzt. configs.h definiert
+  // unter MARAUDER_CORE_MODE bereits 8 (das gewinnt). 8 gilt fuer PLAINTEXT;
+  // mit Verschluesselung max. 6 (ESP-NOW-Encrypted-Peer-Limit).
+  #define WARDRIVE_CORE_MAX_NODES 8
+#endif
+#ifndef WARDRIVE_CORE_QUEUE_LEN
+  #define WARDRIVE_CORE_QUEUE_LEN 12
+#endif
+#ifndef WARDRIVE_CORE_DISPLAY_REFRESH_MS
+  #define WARDRIVE_CORE_DISPLAY_REFRESH_MS 500
+#endif
+#ifndef WARDRIVE_CORE_NODE_TIMEOUT_MS
+  #define WARDRIVE_CORE_NODE_TIMEOUT_MS 60000
+#endif
+#ifndef WARDRIVE_CORE_HEAP_MIN_INIT
+  #define WARDRIVE_CORE_HEAP_MIN_INIT 30000
+#endif
+#ifndef WARDRIVE_CORE_HEAP_MIN_RUNTIME
+  #define WARDRIVE_CORE_HEAP_MIN_RUNTIME 15000
+#endif
+
+// Center-Long-Press Threshold zum Beenden des Modes.
+#define WARDRIVE_CORE_EXIT_HOLD_MS 2000
+
+// Pro-Tick-Drain-Limit damit Display nicht blockiert.
+#define WARDRIVE_CORE_MAX_DRAIN_PER_TICK 4
+
+// Periodische Aufgaben.
+#define WARDRIVE_CORE_STALE_CHECK_MS 1000
+#define WARDRIVE_CORE_HEAP_CHECK_MS  5000
+#define WARDRIVE_CORE_SD_CHECK_MS    30000
+
+// Pro-Node State-Container. Adapted from Wardriver `WiFiOps.h:80-88`,
+// um `mac[6]` erweitert (Marauder nutzt volle MAC fuer Peer-Mgmt) und um
+// pro-Node-Counter fuer Stats. ~36 Byte mit Padding.
+struct NodeRecord {
+    uint8_t  mac[6];                    // 6
+    uint16_t mac_suffix;                // 2 — analog Wardriver, fuer Logging/Lookup-Fast-Path
+    uint8_t  flags;                     // 1 — NODE_FLAG_ACTIVE | _ENCRYPTED | _ADMIN_DIRTY
+    uint8_t  assigned_index;            // 1 — Position 0..N-1 im Cluster
+    uint32_t last_seen_ms;              // 4 — letzter Heartbeat ODER TEXT
+    uint32_t hb_counter;                // 4 — letzter empfangener Heartbeat-Counter (Logging)
+    uint8_t  start_channel_idx;         // 1
+    uint8_t  end_channel_idx;           // 1
+    uint8_t  last_admin_version_sent;   // 1
+    uint16_t rx_text_count;             // 2 — pro-Node-Stats
+    uint16_t rx_bad_count;              // 2
+    // Padding auf naechste 4-byte-Grenze.
+};
+
+// Queue-Slot fuer RX-Callback -> Worker. Wir kopieren Source-MAC und RSSI
+// dazu, weil das info->src_addr/rssi nach Callback-Return ungueltig sein kann.
+struct WardriveCoreQueueMsg {
+    uint8_t          src_mac[6];
+    int8_t           rssi;
+    uint8_t          msg_type;          // gespiegelt aus payload[4] zur schnelleren Dispatch
+    enow_text_msg_t  payload;           // 212 bytes
+};
+
+class WardriveCore {
+public:
+    WardriveCore();
+
+    // Lifecycle. Nur aus dem Marauder-Loop-Kontext aufrufen, nicht aus ISR/Callback.
+    void init();
+    void runTick(uint32_t currentTime);
+    void deinit();
+
+    bool isRunning() const { return is_running; }
+
+    // ---- Barrier-Session-Steuerung (aus dem Marauder-UI aufgerufen) ----
+    // Der CORE startet in der LOBBY: er registriert Nodes + weist Kanaele zu,
+    // aber die Nodes bleiben idle bis startSession() SESSION_CMD_START
+    // broadcastet. Waehrend COLLECTING ist die Partition EINGEFROREN (neue/tote
+    // Nodes reshuffeln die Flotte NICHT) — resyncSession() re-partitioniert auf
+    // Befehl und zieht Spaet-Joiner rein.
+    void    startSession();
+    void    stopSession();
+    void    resyncSession();
+    bool    isCollecting() const { return collecting; }
+    uint8_t getNodeCount();      // aktive registrierte Nodes (fuer Lobby-Display)
+
+    // Static ESP-NOW-Recv-Callback. Schreibt RX in die Queue. Laeuft im
+    // WiFi-Task-Context, daher minimal: Magic-Check, Type-Check, enqueue.
+    static void onDataRecv_static(const esp_now_recv_info_t* info,
+                                  const uint8_t* data,
+                                  int len);
+
+private:
+    // ---- Node-Tabelle / Topologie ----
+    NodeRecord node_table[WARDRIVE_CORE_MAX_NODES];
+
+    // touchNode: findet/legt Slot fuer MAC an. Returns slot index, oder -1
+    // bei Hard-Reject (alle Slots belegt). isNewNode wird gesetzt wenn
+    // ein neuer Slot allokiert wurde.
+    int touchNode(const uint8_t* mac, bool& isNewNode);
+    int findNodeByMacSuffix(uint16_t suffix);
+    int findNodeByMac(const uint8_t* mac);
+    int allocateNodeSlot(const uint8_t* mac);
+
+    bool removeStaleNodes();             // returns true bei Aenderung
+    void recalculateChannelAssignments();
+    void markAllActiveNodesAdminDirty();
+    void handleNodeTopologyChange();
+    uint8_t getActiveNodeCount();
+
+    // ---- ESP-NOW-Send ----
+    bool sendCoreReply(const uint8_t* destMac);
+    bool sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac);
+    bool addPeerWithMode(const uint8_t* mac, bool encrypt, const uint8_t lmk16[16]);
+    bool broadcastSession(uint8_t command);   // MSG_SESSION an alle Nodes (FF:FF:...)
+
+    // Channel-6-fix Workaround: Promisc-on/set_channel/Promisc-off.
+    // Adapted from Wardriver WiFiOps.cpp:573-593.
+    void setFixedChannel(uint8_t ch);
+
+    // ---- Crypto ----
+    // SHA-256-derive aus String, erste 16 Bytes. Adapted from Wardriver
+    // WiFiOps.cpp:1108-1118.
+    static void derive_key_16(const String& s, uint8_t out16[16]);
+    void computeKeysFromUserKey();
+
+    // ---- Wigle-Line ----
+    // Compose 11-Feld-Wigle-Line aus 6-Feld-Node-Text plus GPS.
+    // Adapted from Wardriver WiFiOps.cpp:821-980 (parseWardriveLine + Compose).
+    String composeWigleLineFromNodeText(const enow_text_msg_t& msg);
+
+    // ---- Display ----
+    void drawCoreModeFrame();            // Init-Once-Layout
+    void refreshCoreDisplay();           // Periodic-Refresh
+
+    // ---- Helpers ----
+    static uint16_t macToSuffix(const uint8_t* mac);
+    void updateLastRx(int slot, int8_t rssi);
+
+    // ---- State ----
+    QueueHandle_t rx_queue;
+    bool          is_running;
+    bool          use_encryption;
+
+    // Barrier-Session: false = Lobby (registrieren+zuweisen, nicht loggen),
+    // true = Collecting (Partition eingefroren, Nodes sammeln). bcast_peer_ready
+    // = FF:FF:...-Peer fuer Session-Broadcasts einmalig angelegt.
+    bool          collecting;
+    bool          bcast_peer_ready;
+    uint8_t       pmk[16];
+    uint8_t       lmk[16];
+    String        user_key;              // aus Settings, leer = no-encrypt
+    uint8_t       assignment_version;
+
+    // Counter fuer Display + Stats.
+    uint32_t total_rx_lines;             // alle akzeptierten Wigle-Lines
+    uint32_t total_rx_wifi;
+    uint32_t total_rx_ble;
+    uint32_t total_rx_bad;               // malformed packets (post-magic-check)
+    uint32_t total_rx_drops;             // Queue-overflows
+    uint32_t low_heap_events;
+    uint32_t buffer_overruns;            // TODO: hooked from Buffer if it exposes overrun stats
+
+    // Last-RX fuer "letzter Node"-Display-Feld.
+    int      last_rx_node_idx;
+    uint32_t last_rx_ms;
+    int8_t   last_rx_rssi;
+
+    // Periodic-Tick-Tracking.
+    uint32_t session_start_ms;
+    uint32_t last_display_refresh_ms;
+    uint32_t last_stale_check_ms;
+    uint32_t last_heap_check_ms;
+    uint32_t last_sd_check_ms;
+
+    // Center-long-press detection. Pin C_BTN ist auf V7 GPIO 34. Wir reusen
+    // den existing `c_btn`-Switches-Wrapper aus dem .ino — daher kein
+    // direktes GPIO-Polling.
+    uint32_t center_press_start_ms;
+    bool     center_was_pressed;
+
+    // SD-Health.
+    bool     sd_healthy;
+};
+
+// Globale Instanz wird in esp32_marauder.ino unter MARAUDER_CORE_MODE definiert.
+extern WardriveCore wardrive_core_obj;
+
+#endif // MARAUDER_CORE_MODE
+#endif // WardriveCore_h
