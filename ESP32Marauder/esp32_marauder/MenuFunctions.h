@@ -163,7 +163,6 @@ class MenuFunctions
     // WiFi menu stuff
     Menu wifiSnifferMenu;
     Menu wifiScannerMenu;
-    Menu wifiAttackMenu;
     /*#ifdef HAS_GPS
       Menu wardrivingMenu;
     #endif*/
@@ -188,7 +187,6 @@ class MenuFunctions
 
     // Bluetooth menu stuff
     Menu bluetoothSnifferMenu;
-    Menu bluetoothAttackMenu;
 
     // Settings things menus
     Menu generateSSIDsMenu;

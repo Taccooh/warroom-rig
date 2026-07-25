@@ -1619,7 +1619,6 @@ void MenuFunctions::RunSetup()
   // WiFi menu stuff
   wifiSnifferMenu.list = new LinkedList<MenuNode>();
   wifiScannerMenu.list = new LinkedList<MenuNode>();
-  wifiAttackMenu.list = new LinkedList<MenuNode>();
   /*#ifdef HAS_GPS
     wardrivingMenu.list = new LinkedList<MenuNode>();
   #endif*/
@@ -1639,7 +1638,6 @@ void MenuFunctions::RunSetup()
 
   // Bluetooth menu stuff
   bluetoothSnifferMenu.list = new LinkedList<MenuNode>();
-  bluetoothAttackMenu.list = new LinkedList<MenuNode>();
 
   // Settings stuff
   generateSSIDsMenu.list = new LinkedList<MenuNode>();
@@ -1674,7 +1672,6 @@ void MenuFunctions::RunSetup()
   bluetoothMenu.name = text_table1[19];
   wifiSnifferMenu.name = text_table1[20];
   wifiScannerMenu.name = "Scanners";
-  wifiAttackMenu.name = text_table1[21];
   wifiGeneralMenu.name = text_table1[22];
   saveFileMenu.name = "Save/Load Files";
   saveSSIDsMenu.name = "Save SSIDs";
@@ -1685,7 +1682,6 @@ void MenuFunctions::RunSetup()
   loadATsMenu.name = "Load Airtags";
 
   bluetoothSnifferMenu.name = text_table1[23];
-  bluetoothAttackMenu.name = "Bluetooth Attacks";
   generateSSIDsMenu.name = text_table1[27];
   clearSSIDsMenu.name = text_table1[28];
   clearAPsMenu.name = text_table1[29];
@@ -1755,9 +1751,6 @@ void MenuFunctions::RunSetup()
       this->changeMenu(&wardrivingMenu, true);
     });
   #endif*/
-  this->addNodes(&wifiMenu, text_table1[32], TFTRED, ATTACKS, [this]() {
-    this->changeMenu(&wifiAttackMenu, true);
-  });
   this->addNodes(&wifiMenu, text_table1[33], TFTPURPLE, GENERAL_APPS, [this]() {
     this->changeMenu(&wifiGeneralMenu, true);
   });
@@ -2015,88 +2008,6 @@ void MenuFunctions::RunSetup()
       });
     }
   #endif*/
-
-  // Build WiFi attack menu
-  wifiAttackMenu.parentMenu = &wifiMenu; // Main Menu is second menu parent
-  this->addNodes(&wifiAttackMenu, text09, TFTLIGHTGREY, 0, [this]() {
-    this->changeMenu(wifiAttackMenu.parentMenu, true);
-  });
-  this->addNodes(&wifiAttackMenu, text_table1[50], TFTRED, BEACON_LIST, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_BEACON_LIST, TFT_RED);
-  });
-  this->addNodes(&wifiAttackMenu, text_table1[51], TFTORANGE, BEACON_SPAM, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_BEACON_SPAM, TFT_ORANGE);
-  });
-  this->addNodes(&wifiAttackMenu, text1_67, TFTCYAN, FUNNY_BEACON, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_FUNNY_BEACON, TFT_CYAN);
-  });
-  this->addNodes(&wifiAttackMenu, text_table1[52], TFTYELLOW, RICK_ROLL, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_RICK_ROLL, TFT_YELLOW);
-  });
-  this->addNodes(&wifiAttackMenu, text_table1[53], TFTRED, PROBE_SNIFF, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_AUTH, TFT_RED);
-  });
-  this->addNodes(&wifiAttackMenu, text_table1[54], TFTRED, DEAUTH_SNIFF, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_DEAUTH, TFT_RED);
-  });
-  this->addNodes(&wifiAttackMenu, text_table1[57], TFTMAGENTA, BEACON_LIST, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_AP_SPAM, TFT_MAGENTA);
-  });
-  this->addNodes(&wifiAttackMenu, text_table1[62], TFTRED, DEAUTH_SNIFF, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_DEAUTH_TARGETED, TFT_ORANGE);
-  });
-
-  this->addNodes(&wifiAttackMenu, "Bad Msg", TFTRED, DEAUTH_SNIFF, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_BAD_MSG, TFT_RED);
-  });
-  this->addNodes(&wifiAttackMenu, "Bad Msg Targeted", TFTYELLOW, DEAUTH_SNIFF, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_BAD_MSG_TARGETED, TFT_YELLOW);
-  });
-  this->addNodes(&wifiAttackMenu, "Assoc Sleep", TFTRED, DEAUTH_SNIFF, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_SLEEP, TFT_RED);
-  });
-  this->addNodes(&wifiAttackMenu, "Assoc Sleep Targ", TFTMAGENTA, DEAUTH_SNIFF, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_SLEEP_TARGETED, TFT_MAGENTA);
-  });
-  this->addNodes(&wifiAttackMenu, "SAE Commit Flood", TFTLIME, EAPOL, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_SAE_COMMIT, TFT_GREEN);
-  });
-  this->addNodes(&wifiAttackMenu, "Channel Switch", TFTORANGE, BEACON_LIST, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_CSA, TFT_GREEN);
-  });
-  this->addNodes(&wifiAttackMenu, "Quiet Time", TFTRED, BEACON_LIST, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_ATTACK_QUIET, TFT_GREEN);
-  });
 
   // Build WiFi General menu
   wifiGeneralMenu.parentMenu = &wifiMenu;
@@ -2613,9 +2524,6 @@ void MenuFunctions::RunSetup()
   this->addNodes(&bluetoothMenu, text_table1[31], TFTYELLOW, SNIFFERS, [this]() {
     this->changeMenu(&bluetoothSnifferMenu, true);
   });
-  this->addNodes(&bluetoothMenu, "Bluetooth Attacks", TFTRED, ATTACKS, [this]() {
-    this->changeMenu(&bluetoothAttackMenu, true);
-  });
 
   // Build bluetooth sniffer Menu
   bluetoothSnifferMenu.parentMenu = &bluetoothMenu; // Second Menu is third menu parent
@@ -2690,103 +2598,9 @@ void MenuFunctions::RunSetup()
     this->changeMenu(&foxHuntMenu, true);
   });
 
-  // Bluetooth Attack menu
-  bluetoothAttackMenu.parentMenu = &bluetoothMenu; // Second Menu is third menu parent
-  this->addNodes(&bluetoothAttackMenu, text09, TFTLIGHTGREY, 0, [this]() {
-    this->changeMenu(bluetoothAttackMenu.parentMenu, true);
-  });
-  this->addNodes(&bluetoothAttackMenu, "Sour Apple", TFTGREEN, DEAUTH_SNIFF, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(BT_ATTACK_SOUR_APPLE, TFT_GREEN);
-  });
-  this->addNodes(&bluetoothAttackMenu, "Apple Juice", TFTYELLOW, DEAUTH_SNIFF, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(BT_ATTACK_APPLE_JUICE, TFT_YELLOW);
-  });
-  this->addNodes(&bluetoothAttackMenu, "Swiftpair Spam", TFTCYAN, KEYBOARD_ICO, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(BT_ATTACK_SWIFTPAIR_SPAM, TFT_CYAN);
-  });
-  this->addNodes(&bluetoothAttackMenu, "Samsung BLE Spam", TFTRED, GENERAL_APPS, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(BT_ATTACK_SAMSUNG_SPAM, TFT_RED);
-  });
-  this->addNodes(&bluetoothAttackMenu, "Google BLE Spam", TFTPURPLE, LANGUAGE, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(BT_ATTACK_GOOGLE_SPAM, TFT_PURPLE);
-  });
-  this->addNodes(&bluetoothAttackMenu, "Flipper BLE Spam", TFTORANGE, FLIPPER, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(BT_ATTACK_FLIPPER_SPAM, TFT_ORANGE);
-  });
-  this->addNodes(&bluetoothAttackMenu, "BLE Spam All", TFTMAGENTA, DEAUTH_SNIFF, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(BT_ATTACK_SPAM_ALL, TFT_MAGENTA);
-  });
 
 #endif
 
-  //#ifndef HAS_ILI9341
-    #ifdef HAS_BT
-    // Select Airtag on Mini
-      this->addNodes(&bluetoothAttackMenu, "Spoof Airtag", TFTWHITE, ATTACKS, [this](){
-          wifiAPMenu.parentMenu = &bluetoothAttackMenu;
-
-          // Clear nodes and add back button
-          wifiAPMenu.list->clear();
-          this->addNodes(&wifiAPMenu, text09, TFT_LIGHTGREY, 0, [this]() {
-          this->changeMenu(wifiAPMenu.parentMenu, true);
-        });
-
-        // Add buttons for all airtags
-        // Find out how big our menu is going to be
-        int menu_limit;
-        if (airtags->size() <= BUTTON_ARRAY_LEN)
-          menu_limit = airtags->size();
-        else
-          menu_limit = BUTTON_ARRAY_LEN;
-
-        // Create the menu nodes for all of the list items
-        for (int i = 0; i < menu_limit; i++) {
-          this->addNodes(&wifiAPMenu, airtags->get(i).mac.c_str(), TFTWHITE, BLUETOOTH, [this, i](){
-            AirTag new_at = airtags->get(i);
-            new_at.selected = true;
-
-            airtags->set(i, new_at);
-
-            // Set all other airtags to "Not Selected"
-            for (int x = 0; x < airtags->size(); x++) {
-              if (x != i) {
-                AirTag new_atx = airtags->get(x);
-                new_atx.selected = false;
-                airtags->set(x, new_atx);
-              }
-            }
-
-            // Start the spoof
-            display_obj.clearScreen();
-            this->drawStatusBar();
-            wifi_scan_obj.StartScan(BT_SPOOF_AIRTAG, TFT_WHITE);
-
-          });
-        }
-        this->changeMenu(&wifiAPMenu, true);
-      });
-
-      wifiAPMenu.parentMenu = &bluetoothAttackMenu;
-      this->addNodes(&wifiAPMenu, text09, TFTLIGHTGREY, 0, [this]() {
-        this->changeMenu(wifiAPMenu.parentMenu, true);
-      });
-    #endif
-
-  //#endif
 
   // Device menu
   deviceMenu.parentMenu = &mainMenu;
