@@ -7,6 +7,7 @@
 #include <WiFi.h>
 
 #include "configs.h"
+#include <LinkedList.h>
 
 #include "esp_heap_caps.h"
 #include "mbedtls/base64.h"
@@ -26,6 +27,35 @@ struct ProbeReqSsid {
     String essid;
     bool selected;
     uint8_t requests;
+};
+
+// Moved here from EvilPortal.h (removed in warroom-rig). Despite living in that
+// file upstream, these are the core scan-record types used across the whole
+// firmware (WiFiScan, MenuFunctions, ...), not portal-specific.
+struct ssid {
+  String essid;
+  uint8_t channel;
+  uint8_t bssid[6];
+  bool selected;
+};
+
+struct AccessPoint {
+  String essid;
+  uint8_t channel;
+  uint8_t bssid[6];
+  bool selected;
+  char beacon[2];
+  int8_t rssi;
+  LinkedList<uint16_t>* stations;
+  uint16_t packets;
+  uint8_t sec;
+  bool wps;
+  String man;
+  bool has_msg_1;
+  bool has_msg_2;
+  bool has_msg_3;
+  bool has_msg_4;
+  uint32_t last_seen_ms;
 };
 
 inline uint8_t getDRAMUsagePercent() {

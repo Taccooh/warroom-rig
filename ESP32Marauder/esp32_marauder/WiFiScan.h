@@ -23,7 +23,6 @@
 
 //#include <WiFi.h>
 #include <ESP32Ping.h>
-#include "EvilPortal.h"
 #include <math.h>
 #include "esp_wifi.h"
 #include "esp_wifi_types.h"
@@ -108,7 +107,6 @@
 #define WIFI_ATTACK_DEAUTH_TARGETED 27
 #define WIFI_SCAN_ACTIVE_LIST_EAPOL 28
 #define WIFI_SCAN_SIG_STREN 29
-#define WIFI_SCAN_EVIL_PORTAL 30
 #define WIFI_SCAN_GPS_DATA 31
 #define WIFI_SCAN_WAR_DRIVE 32
 #define WIFI_SCAN_STATION_WAR_DRIVE 33
@@ -222,8 +220,6 @@
 #define CLEAR_MULTI 6
 #define CLEAR_SSID  7
 #define CLEAR_BLE   8
-
-extern EvilPortal evil_portal_obj;
 
 #ifdef HAS_SCREEN
   extern Display display_obj;
@@ -685,7 +681,6 @@ class WiFiScan
     void RunBluetoothScan(uint8_t scan_mode, uint16_t color);
     void RunSourApple(uint8_t scan_mode, uint16_t color);
     void RunSwiftpairSpam(uint8_t scan_mode, uint16_t color);
-    void RunEvilPortal(uint8_t scan_mode, uint16_t color);
     void RunPingScan(uint8_t scan_mode, uint16_t color);
     void RunPortScanAll(uint8_t scan_mode, uint16_t color);
     bool checkMem();

@@ -179,7 +179,6 @@ class MenuFunctions
     //#endif
 
     // WiFi General Menu
-    Menu htmlMenu;
     Menu miniKbMenu;
     Menu saveFileMenu;
     Menu genAPMacMenu;
@@ -193,8 +192,6 @@ class MenuFunctions
 
     // Settings things menus
     Menu generateSSIDsMenu;
-
-    Menu evilPortalMenu;
 
     Menu foxHuntMenu;
 

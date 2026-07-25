@@ -45,7 +45,6 @@ https://www.online-utility.org/image/convert/to/XBM
 #endif
 
 #include "settings.h"
-#include "CommandLine.h"
 #include "lang_var.h"
 
 #ifdef HAS_BATTERY
@@ -79,10 +78,8 @@ https://www.online-utility.org/image/convert/to/XBM
 #endif
 
 WiFiScan wifi_scan_obj;
-EvilPortal evil_portal_obj;
 Buffer buffer_obj;
 Settings settings_obj;
-CommandLine cli_obj;
 
 #ifdef MARAUDER_CORE_MODE
   WardriveCore wardrive_core_obj;
@@ -387,8 +384,6 @@ void setup()
     display_obj.tft.drawCentreString("Initializing...", TFT_WIDTH/2, TFT_HEIGHT * 0.82, 1);
   #endif
 
-  evil_portal_obj.setup();
-
   #ifdef HAS_BATTERY
     battery_obj.RunSetup();
   #endif
@@ -434,8 +429,6 @@ void setup()
   menu_function_obj.changeMenu(menu_function_obj.current_menu);*/
 
   wifi_scan_obj.StartScan(WIFI_SCAN_OFF);
-  
-  cli_obj.RunSetup();
 }
 
 
@@ -467,7 +460,6 @@ void loop()
   #endif
 
   // Update all of our objects
-  cli_obj.main(currentTime);
   wifi_scan_obj.main(currentTime);
 
   #ifdef HAS_GPS

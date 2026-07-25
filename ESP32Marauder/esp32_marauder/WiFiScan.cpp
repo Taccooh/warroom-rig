@@ -2032,8 +2032,6 @@ void WiFiScan::StartScan(uint8_t scan_mode, uint16_t color) {
     #endif
     RunProbeScan(scan_mode, color);
   }
-  else if (scan_mode == WIFI_SCAN_EVIL_PORTAL)
-    RunEvilPortal(scan_mode, color);
   else if (scan_mode == WIFI_SCAN_EAPOL)
     RunEapolScan(scan_mode, color);
   else if (scan_mode == WIFI_SCAN_ACTIVE_EAPOL)
@@ -2419,7 +2417,6 @@ void WiFiScan::StopScan(uint8_t scan_mode) {
   (currentScanMode == WIFI_SCAN_SAE_COMMIT) ||
   (currentScanMode == WIFI_SCAN_AP) ||
   (currentScanMode == WIFI_SCAN_WAR_DRIVE) ||
-  (currentScanMode == WIFI_SCAN_EVIL_PORTAL) ||
   (currentScanMode == WIFI_SCAN_RAW_CAPTURE) ||
   (currentScanMode == WIFI_SCAN_STATION) ||
   (currentScanMode == WIFI_SCAN_SIG_STREN) ||
@@ -2509,10 +2506,7 @@ void WiFiScan::StopScan(uint8_t scan_mode) {
       this->connected_devices = 0;
 
       WiFi.removeEvent(eventId);
-
-      evil_portal_obj.cleanup();
     #endif
-    evil_portal_obj.has_ap = false;
   }
 
   if ((currentScanMode == GPS_TRACKER) ||
@@ -3544,29 +3538,6 @@ void WiFiScan::RunSaveSSIDList(bool save_as) {
       Serial.println((String)ssids->size());
     }
   #endif
-}
-
-void WiFiScan::RunEvilPortal(uint8_t scan_mode, uint16_t color) {
-  startLog("evil_portal");
-
-  this->setLEDMode(MODE_SNIFF);
-
-  #ifdef HAS_SCREEN
-    this->setupScanDisplayArea(TFT_WHITE, color);
-    #ifdef HAS_FULL_SCREEN
-      display_obj.tft.fillRect(0,16,TFT_WIDTH,16, color);
-      display_obj.tft.drawCentreString(" Evil Portal ",TFT_WIDTH / 2,16,2);
-    #endif
-    this->prepareScanStage(TFT_MAGENTA, TFT_BLACK);
-  #endif
-
-  #ifdef HAS_IDF_3
-    esp_wifi_init(&cfg);
-  #endif
-
-  evil_portal_obj.begin(ssids, access_points);
-  this->wifi_initialized = true;
-  initTime = millis();
 }
 
 // Function to start running a beacon scan
@@ -7343,7 +7314,6 @@ void WiFiScan::beaconSnifferCallback(void* buf, wifi_promiscuous_pkt_type_t type
 
   #ifdef HAS_GPS
     extern GpsInterface gps_obj;
-    extern EvilPortal evil_portal_obj;
   #endif
 
   wifi_promiscuous_pkt_t *snifferPacket = (wifi_promiscuous_pkt_t*)buf;
@@ -10926,26 +10896,6 @@ void WiFiScan::main(uint32_t currentTime)
       this->initTime = millis();
       this->RunGPSNmea();
     }
-  }
-  else if (currentScanMode == WIFI_SCAN_EVIL_PORTAL) {
-    if (currentTime - initTime >= (this->channel_hop_delay * HOP_DELAY) / 4) {
-      initTime = millis();
-      if (this->ep_deauth) {
-        for (int i = 0; i < access_points->size(); i++) {
-          AccessPoint access_point = access_points->get(i);
-          if (access_point.selected) {
-            uint8_t dst_mac_bytes[6];
-            convertMacStringToUint8("ff:ff:ff:ff:ff:ff", dst_mac_bytes);
-            this->sendDeauthFrame(access_point.bssid, access_point.channel, dst_mac_bytes);
-          }
-        }
-      }
-    }
-
-    if (evil_portal_obj.ap_index > -1)
-      this->changeChannel(access_points->get(evil_portal_obj.ap_index).channel);
-    
-    evil_portal_obj.main(currentScanMode);
   }
   else if (currentScanMode == WIFI_PACKET_MONITOR)
   {
