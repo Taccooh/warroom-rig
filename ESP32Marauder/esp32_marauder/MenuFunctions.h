@@ -192,6 +192,7 @@ class MenuFunctions
     Menu generateSSIDsMenu;
 
     Menu foxHuntMenu;
+    Menu wdgwarsMenu;
 
     //static void lv_tick_handler();
 

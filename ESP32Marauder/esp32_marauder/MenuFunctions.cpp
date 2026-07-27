@@ -1659,6 +1659,7 @@ void MenuFunctions::RunSetup()
   #endif
 
   foxHuntMenu.list = new LinkedList<MenuNode>();
+  wdgwarsMenu.list = new LinkedList<MenuNode>();
 
   // Work menu names
   mainMenu.name = text_table1[6];
@@ -1710,9 +1711,14 @@ void MenuFunctions::RunSetup()
   #endif
 
   foxHuntMenu.name = "Fox Hunt";
+  wdgwarsMenu.name = "wdgwars";
 
   // Build Main Menu
   mainMenu.parentMenu = NULL;
+  // wdgwars-first: the game modules are the top entry of the main menu
+  this->addNodes(&mainMenu, "wdgwars", TFTCYAN, WIFI, [this]() {
+    this->changeMenu(&wdgwarsMenu, true);
+  });
   this->addNodes(&mainMenu, text_table1[7], TFTGREEN, WIFI, [this]() {
     this->changeMenu(&wifiMenu, true);
   });
@@ -1734,6 +1740,34 @@ void MenuFunctions::RunSetup()
   this->addNodes(&mainMenu, text_table1[30], TFTLIGHTGREY, REBOOT, []() {
     ESP.restart();
   });
+
+  // Build wdgwars menu -- the game modules, moved out of the WiFi>Sniffers tree
+  // to be the top-level, first entry of the main menu.
+  wdgwarsMenu.parentMenu = &mainMenu;
+  this->addNodes(&wdgwarsMenu, text09, TFTLIGHTGREY, 0, [this]() {
+    this->changeMenu(wdgwarsMenu.parentMenu, true);
+  });
+  #ifdef MARAUDER_CORE_MODE
+    this->addNodes(&wdgwarsMenu, "Wardrive Core", TFTCYAN, BEACON_SNIFF, [this]() {
+      display_obj.clearScreen();
+      this->drawStatusBar();
+      wifi_scan_obj.StartScan(WIFI_SCAN_WAR_DRIVE_CORE, TFT_CYAN);
+    });
+  #endif
+  #ifdef MARAUDER_WDGWARS_UPLOAD
+    this->addNodes(&wdgwarsMenu, "WDGWars Upload", TFTORANGE, BEACON_SNIFF, [this]() {
+      display_obj.clearScreen();
+      this->drawStatusBar();
+      wifi_scan_obj.StartScan(WIFI_SCAN_WDGWARS_UPLOAD, TFT_ORANGE);
+    });
+  #endif
+  #ifdef MARAUDER_FILE_SERVER_AP
+    this->addNodes(&wdgwarsMenu, "File Server AP", TFTMAGENTA, BEACON_SNIFF, [this]() {
+      display_obj.clearScreen();
+      this->drawStatusBar();
+      wifi_scan_obj.StartScan(WIFI_SCAN_FILE_SERVER_AP, TFT_MAGENTA);
+    });
+  #endif
 
   // Build WiFi Menu
   wifiMenu.parentMenu = &mainMenu; // Main Menu is second menu parent
@@ -1970,34 +2004,7 @@ void MenuFunctions::RunSetup()
         this->drawStatusBar();
         wifi_scan_obj.StartScan(WIFI_SCAN_WAR_DRIVE, TFT_GREEN);
       });
-      #ifdef MARAUDER_CORE_MODE
-        // Core-Mode-Eintrag — parallel zum existing Wardrive im wifiSnifferMenu.
-        // Color TFTCYAN zur visuellen Differenzierung.
-        this->addNodes(&wifiSnifferMenu, "Wardrive Core", TFTCYAN, BEACON_SNIFF, [this]() {
-          display_obj.clearScreen();
-          this->drawStatusBar();
-          wifi_scan_obj.StartScan(WIFI_SCAN_WAR_DRIVE_CORE, TFT_CYAN);
-        });
-      #endif
     }
-  #endif
-  // WDGWars-Upload — kein GPS-Requirement, deshalb außerhalb von HAS_GPS-Block.
-  // Direkt nach Wardrive-Core in der Menue-Liste, Color TFTORANGE zur Differenzierung.
-  #ifdef MARAUDER_WDGWARS_UPLOAD
-    this->addNodes(&wifiSnifferMenu, "WDGWars Upload", TFTORANGE, BEACON_SNIFF, [this]() {
-      display_obj.clearScreen();
-      this->drawStatusBar();
-      wifi_scan_obj.StartScan(WIFI_SCAN_WDGWARS_UPLOAD, TFT_ORANGE);
-    });
-  #endif
-  #ifdef MARAUDER_FILE_SERVER_AP
-    // Field-extraction tool: spins up an AP + HTTP server over the SD card.
-    // Color TFTMAGENTA so it stands apart from the wardrive entries.
-    this->addNodes(&wifiSnifferMenu, "File Server AP", TFTMAGENTA, BEACON_SNIFF, [this]() {
-      display_obj.clearScreen();
-      this->drawStatusBar();
-      wifi_scan_obj.StartScan(WIFI_SCAN_FILE_SERVER_AP, TFT_MAGENTA);
-    });
   #endif
   /*#ifdef HAS_GPS
     if (gps_obj.getGpsModuleStatus()) {
