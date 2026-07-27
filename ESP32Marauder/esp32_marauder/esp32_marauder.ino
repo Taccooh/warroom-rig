@@ -19,6 +19,7 @@ https://www.online-utility.org/image/convert/to/XBM
 #endif
 
 #include "Assets.h"
+#include "GorillaSplash.h"
 #include "WiFiScan.h"
 #ifdef MARAUDER_CORE_MODE
   #include "WardriveCore.h"
@@ -333,9 +334,28 @@ void setup()
 
   #ifdef HAS_SCREEN
     #if !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
-      display_obj.tft.drawCentreString("warroom-rig", TFT_WIDTH/2, TFT_HEIGHT * 0.33, 1);
-      display_obj.tft.drawCentreString("based on Marauder", TFT_WIDTH/2, TFT_HEIGHT * 0.5, 1);
-      display_obj.tft.drawCentreString(display_obj.version_number, TFT_WIDTH/2, TFT_HEIGHT * 0.66, 1);
+      // warroom-rig boot splash: berserker gorilla (shares the warroom PWA art).
+      // The screen is drawn while the backlight is still off (backlightOff()
+      // above), then the backlight is faded up so the gorilla materialises out
+      // of the dark instead of snapping on.
+      display_obj.tft.fillScreen(TFT_BLACK);
+      display_obj.tft.setSwapBytes(true);
+      display_obj.tft.pushImage(0, 0, GORILLA_SPLASH_W, GORILLA_SPLASH_H, gorilla_splash);
+      display_obj.tft.setSwapBytes(false);
+      display_obj.tft.fillRect(0, TFT_HEIGHT - 52, TFT_WIDTH, 52, TFT_BLACK);
+      display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      display_obj.tft.setTextSize(2);
+      display_obj.tft.drawCentreString("warroom-rig", TFT_WIDTH/2, TFT_HEIGHT - 46, 1);
+      display_obj.tft.setTextSize(1);
+      display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+      display_obj.tft.drawCentreString(WARROOM_RIG_VERSION, TFT_WIDTH/2, TFT_HEIGHT - 16, 1);
+      display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      { // fade the backlight from black up to the saved level (~1.8 s rise)
+        uint8_t bl_target = BL_LEVELS[bl_level_idx];
+        for (int d = 0; d <= bl_target; d += 2) { BL_SET(d); delay(14); }
+        BL_SET(bl_target);
+      }
+      delay(2600); // hold the gorilla on screen
     #else
       display_obj.tft.drawCentreString("warroom-rig", TFT_HEIGHT/2, TFT_WIDTH * 0.33, 1);
       display_obj.tft.drawCentreString("based on Marauder", TFT_HEIGHT/2, TFT_WIDTH * 0.5, 1);

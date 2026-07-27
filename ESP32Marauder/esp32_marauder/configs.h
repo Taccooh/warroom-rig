@@ -69,6 +69,9 @@
   #define JSON_SETTING_SIZE 2048
 
   #define MARAUDER_VERSION "v1.13.0"
+  // warroom-rig product version (shown on the boot splash). The Marauder
+  // version above is kept for internal/upstream references.
+  #define WARROOM_RIG_VERSION "v0.1"
 
   #define GRAPH_REFRESH   100
 
