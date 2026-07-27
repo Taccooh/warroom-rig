@@ -4256,8 +4256,6 @@ void WiFiScan::RunEapolScan(uint8_t scan_mode, uint16_t color) {
   esp_wifi_set_storage(WIFI_STORAGE_RAM);
   esp_wifi_set_mode(WIFI_MODE_AP);
 
-  this->throwThatShitInACircle();
-
   esp_wifi_start();
   this->setMac();
   esp_wifi_set_promiscuous(true);
@@ -4670,7 +4668,6 @@ void WiFiScan::setBaseMacAddress(uint8_t macAddr[6]) {
         #endif
         this->setWiFiMode(WIFI_MODE_AP, beaconSnifferCallback);
         this->changeChannel(1);
-        broadcastSetSSID(millis(), "Flock", 1);
 
         // WiFi has completed scan.
         // Start a BLE scan
@@ -4817,14 +4814,10 @@ void WiFiScan::executeWarDrive() {
             esp_wifi_set_country(&country);
             esp_event_loop_create_default();
           #endif
-          this->throwThatShitInACircle();
+          // warroom-rig: passive rig -- Flock-camera detection (active deauth +
+          // "Flock" beacon transmit) removed; only the passive WiFi mode switch remains.
           this->setWiFiMode(WIFI_MODE_AP, beaconSnifferCallback);
           this->changeChannel(1);
-          uint8_t ap_mac[6];
-          esp_read_mac(ap_mac, ESP_MAC_WIFI_SOFTAP);
-          for (int i = 0; i < 3; i++)
-            broadcastCustomBeacon(millis(), {"Flock", 1, {ap_mac[0], ap_mac[1], ap_mac[2], ap_mac[3], ap_mac[4], ap_mac[5]}, false}, true);
-          //broadcastSetSSID(millis(), "Flock", 1, true);
         }
 
         // Only run BLE after the entire weighted WiFi channel list has completed.
@@ -5488,7 +5481,6 @@ void WiFiScan::RunProbeScan(uint8_t scan_mode, uint16_t color) {
   if (scan_mode != BT_SCAN_FLOCK)
     this->setWiFiMode(WIFI_MODE_NULL, beaconSnifferCallback);
   else {
-    this->throwThatShitInACircle();
     this->setWiFiMode(WIFI_MODE_AP, beaconSnifferCallback);
   }
   this->changeChannel(this->set_channel);
