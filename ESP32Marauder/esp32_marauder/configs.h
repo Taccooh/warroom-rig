@@ -984,7 +984,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
 
     #endif
 
@@ -1060,7 +1060,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
 
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
 
     #endif
 
@@ -1134,7 +1134,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
 
     #endif
 
@@ -1203,7 +1203,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif
@@ -1276,7 +1276,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif
@@ -1350,7 +1350,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif 
@@ -1419,7 +1419,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif
@@ -1488,7 +1488,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif
@@ -1558,7 +1558,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif
@@ -1630,7 +1630,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif
@@ -1701,7 +1701,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif
@@ -1772,7 +1772,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif
@@ -1843,7 +1843,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif
@@ -1915,7 +1915,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     
       #define KIT_LED_BUILTIN 13
     #endif
@@ -1992,7 +1992,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     #endif
 
     #ifdef MARAUDER_REV_FEATHER
@@ -2067,7 +2067,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     #endif
 
     #ifdef MARAUDER_MINI_V3
@@ -2142,7 +2142,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR 0x5A44
     #endif
 
   #endif
@@ -2588,6 +2588,7 @@
   #define TFTDARKGREY  16
   #define TFTSKYBLUE   17
   #define TFTLIME      18
+  #define TFTGOLD      19
   //// END SPACE SAVING COLORS
 
   #define TFT_FARTGRAY 0x528a

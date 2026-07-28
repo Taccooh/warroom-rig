@@ -35,7 +35,7 @@ imposes no license obligation on the fork's own MIT code.
 |---|---|
 | ArduinoJson | MIT |
 | Adafruit_BusIO | MIT |
-| Adafruit_MAX1704X | MIT |
+| Adafruit_MAX1704X | BSD-3-Clause |
 | Adafruit_NeoPixel | LGPL-3.0 |
 | Adafruit_TCA8418 | MIT |
 | lv_arduino (LVGL) | MIT |

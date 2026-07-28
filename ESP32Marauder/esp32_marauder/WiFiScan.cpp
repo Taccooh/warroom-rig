@@ -4823,7 +4823,7 @@ void WiFiScan::RunWardriveCore(uint16_t color) {
     this->setupScanDisplayArea(TFT_WHITE, color);
     #ifdef HAS_FULL_SCREEN
       display_obj.tft.fillRect(0, 16, TFT_WIDTH, 16, color);
-      display_obj.tft.drawCentreString("Wardrive Core", TFT_WIDTH / 2, 16, 2);
+      display_obj.tft.drawCentreString("Rig Mode", TFT_WIDTH / 2, 16, 2);
     #endif
   #endif
 

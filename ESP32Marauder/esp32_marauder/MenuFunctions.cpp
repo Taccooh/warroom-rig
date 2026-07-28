@@ -6,6 +6,8 @@
 
 extern const unsigned char menu_icons[][66];
 
+#include "GorillaMini.h"   // warroom-rig home-screen top-bar mascot (22x22 RGB565)
+
 #ifdef HAS_MINI_SCREEN
 void MenuFunctions::drawMiniMenuButton(int b, int x, bool selected) {
   if (!current_menu || !current_menu->list || x < 0 || x >= current_menu->list->size())
@@ -31,6 +33,9 @@ void MenuFunctions::drawMiniMenuButton(int b, int x, bool selected) {
 #endif
 
 void MenuFunctions::buttonNotSelected(int b, int x) {
+  // warroom-rig home screen: repaint just the card/strip being deselected back
+  // to its idle look.
+  if (current_menu == &mainMenu) { this->drawRigHome(x == -1 ? b : x); return; }
   if (x == -1)
     x = b;
 
@@ -61,6 +66,9 @@ void MenuFunctions::buttonNotSelected(int b, int x) {
 }
 
 void MenuFunctions::buttonSelected(int b, int x) {
+  // warroom-rig home screen: selection lives in mainMenu.selected. Repaint just
+  // the newly selected card/strip so nav is flicker-free.
+  if (current_menu == &mainMenu) { this->drawRigHome(x == -1 ? b : x); return; }
   if (x == -1)
     x = b;
 
@@ -170,8 +178,17 @@ void MenuFunctions::main(uint32_t currentTime)
     if (currentTime - initTime >= BANNER_TIME) {
       this->initTime = millis();
       if ((wifi_scan_obj.currentScanMode != LV_JOIN_WIFI) &&
-          (wifi_scan_obj.currentScanMode != LV_ADD_SSID))
-        this->updateStatusBar();
+          (wifi_scan_obj.currentScanMode != LV_ADD_SSID)) {
+        // On the warroom-rig home screen (idle, no scan running), refresh our own
+        // honest header instead of the Marauder status bar -- the latter would
+        // overlap the wordmark and report "GPS" on mere module presence rather
+        // than an actual fix. During a scan launched from home current_menu is
+        // still &mainMenu, so also require WIFI_SCAN_OFF or we'd paint over it.
+        if (current_menu == &mainMenu && wifi_scan_obj.currentScanMode == WIFI_SCAN_OFF)
+          this->drawRigHeader(false);
+        else
+          this->updateStatusBar();
+      }
       
       // Do channel analyzer stuff
       if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_CHAN_ANALYZER) ||
@@ -1659,7 +1676,7 @@ void MenuFunctions::RunSetup()
   #endif
 
   foxHuntMenu.list = new LinkedList<MenuNode>();
-  wdgwarsMenu.list = new LinkedList<MenuNode>();
+  toolsMenu.list = new LinkedList<MenuNode>();
 
   // Work menu names
   mainMenu.name = text_table1[6];
@@ -1711,66 +1728,69 @@ void MenuFunctions::RunSetup()
   #endif
 
   foxHuntMenu.name = "Fox Hunt";
-  wdgwarsMenu.name = "wdgwars";
+  toolsMenu.name = "Tools";
 
   // Build Main Menu
   mainMenu.parentMenu = NULL;
-  // wdgwars-first: the game modules are the top entry of the main menu
-  this->addNodes(&mainMenu, "wdgwars", TFTCYAN, WIFI, [this]() {
-    this->changeMenu(&wdgwarsMenu, true);
-  });
-  this->addNodes(&mainMenu, text_table1[7], TFTGREEN, WIFI, [this]() {
-    this->changeMenu(&wifiMenu, true);
-  });
-  #ifdef HAS_BT
-    this->addNodes(&mainMenu, text_table1[19], TFTCYAN, BLUETOOTH, [this]() {
-      this->changeMenu(&bluetoothMenu, true);
-    });
-  #endif
-  #ifdef HAS_GPS
-	if (gps_obj.getGpsModuleStatus()) {
-    	this->addNodes(&mainMenu, text1_66, TFTRED, GPS_MENU, [this]() {
-      	this->changeMenu(&gpsMenu, true);
-    	});
-	}
-  #endif
-  this->addNodes(&mainMenu, text_table1[9], TFTBLUE, DEVICE, [this]() {
-    this->changeMenu(&deviceMenu, true);
-  });
-  this->addNodes(&mainMenu, text_table1[30], TFTLIGHTGREY, REBOOT, []() {
-    ESP.restart();
-  });
-
-  // Build wdgwars menu -- the game modules, moved out of the WiFi>Sniffers tree
-  // to be the top-level, first entry of the main menu.
-  wdgwarsMenu.parentMenu = &mainMenu;
-  this->addNodes(&wdgwarsMenu, text09, TFTLIGHTGREY, 0, [this]() {
-    this->changeMenu(wdgwarsMenu.parentMenu, true);
-  });
+  // warroom-rig: the three rig functions ARE the primary menu; the Marauder
+  // scanner tools sit behind a single "Tools" door.
   #ifdef MARAUDER_CORE_MODE
-    this->addNodes(&wdgwarsMenu, "Wardrive Core", TFTCYAN, BEACON_SNIFF, [this]() {
+    this->addNodes(&mainMenu, "Rig Mode", TFTGOLD, WIFI, [this]() {
       display_obj.clearScreen();
       this->drawStatusBar();
       wifi_scan_obj.StartScan(WIFI_SCAN_WAR_DRIVE_CORE, TFT_CYAN);
     });
   #endif
   #ifdef MARAUDER_WDGWARS_UPLOAD
-    this->addNodes(&wdgwarsMenu, "WDGWars Upload", TFTORANGE, BEACON_SNIFF, [this]() {
+    this->addNodes(&mainMenu, "Upload", TFTYELLOW, UPDATE, [this]() {
       display_obj.clearScreen();
       this->drawStatusBar();
       wifi_scan_obj.StartScan(WIFI_SCAN_WDGWARS_UPLOAD, TFT_ORANGE);
     });
   #endif
   #ifdef MARAUDER_FILE_SERVER_AP
-    this->addNodes(&wdgwarsMenu, "File Server AP", TFTMAGENTA, BEACON_SNIFF, [this]() {
+    this->addNodes(&mainMenu, "File Server", TFTORANGE, GENERAL_APPS, [this]() {
       display_obj.clearScreen();
       this->drawStatusBar();
       wifi_scan_obj.StartScan(WIFI_SCAN_FILE_SERVER_AP, TFT_MAGENTA);
     });
   #endif
+  // The home screen shows exactly four items: the three rig actions plus one
+  // "Tools" door. Device settings and Reboot live inside Tools so they stay
+  // reachable without cluttering the console.
+  this->addNodes(&mainMenu, "Tools", TFTDARKGREY, SCANNERS, [this]() {
+    this->changeMenu(&toolsMenu, true);
+  });
+
+  // Build Tools menu -- the Marauder scanners + system, backgrounded behind one door.
+  toolsMenu.parentMenu = &mainMenu;
+  this->addNodes(&toolsMenu, text09, TFTLIGHTGREY, 0, [this]() {
+    this->changeMenu(toolsMenu.parentMenu, true);
+  });
+  this->addNodes(&toolsMenu, text_table1[7], TFTSKYBLUE, WIFI, [this]() {
+    this->changeMenu(&wifiMenu, true);
+  });
+  #ifdef HAS_BT
+    this->addNodes(&toolsMenu, text_table1[19], TFTBLUE, BLUETOOTH, [this]() {
+      this->changeMenu(&bluetoothMenu, true);
+    });
+  #endif
+  #ifdef HAS_GPS
+    if (gps_obj.getGpsModuleStatus()) {
+      this->addNodes(&toolsMenu, text1_66, TFTGREEN, GPS_MENU, [this]() {
+        this->changeMenu(&gpsMenu, true);
+      });
+    }
+  #endif
+  this->addNodes(&toolsMenu, text_table1[9], TFTSILVER, DEVICE, [this]() {
+    this->changeMenu(&deviceMenu, true);
+  });
+  this->addNodes(&toolsMenu, text_table1[30], TFTRED, REBOOT, []() {
+    ESP.restart();
+  });
 
   // Build WiFi Menu
-  wifiMenu.parentMenu = &mainMenu; // Main Menu is second menu parent
+  wifiMenu.parentMenu = &toolsMenu; // Main Menu is second menu parent
   this->addNodes(&wifiMenu, text09, TFTLIGHTGREY, 0, [this]() {
     this->changeMenu(wifiMenu.parentMenu, true);
   });
@@ -2524,7 +2544,7 @@ void MenuFunctions::RunSetup()
 
 #ifdef HAS_BT
   // Build Bluetooth Menu
-  bluetoothMenu.parentMenu = &mainMenu; // Second Menu is third menu parent
+  bluetoothMenu.parentMenu = &toolsMenu; // Second Menu is third menu parent
   this->addNodes(&bluetoothMenu, text09, TFTLIGHTGREY, 0, [this]() {
     this->changeMenu(bluetoothMenu.parentMenu, true);
   });
@@ -2737,7 +2757,7 @@ void MenuFunctions::RunSetup()
   // GPS Menu
   #ifdef HAS_GPS
     if (gps_obj.getGpsModuleStatus()) {
-      gpsMenu.parentMenu = &mainMenu; // Main Menu is second menu parent
+      gpsMenu.parentMenu = &toolsMenu; // Main Menu is second menu parent
 
       this->addNodes(&gpsMenu, text09, TFTLIGHTGREY, 0, [this]() {
         this->changeMenu(gpsMenu.parentMenu, true);
@@ -3550,6 +3570,7 @@ uint16_t MenuFunctions::getColor(uint16_t color) {
   else if (color == TFTDARKGREY) return TFT_DARKGREY;
   else if (color == TFTSKYBLUE) return TFT_SKYBLUE;
   else if (color == TFTLIME) return 0x97e0;
+  else if (color == TFTGOLD) return 0xEDA9; // warroom clan gold (#e8b64c)
   else return color;
 }
 
@@ -3641,8 +3662,172 @@ void MenuFunctions::buildButtons(Menu *menu, int starting_index, const char* but
   }
 }
 
+// ------------------------------------------------------------
+// warroom-rig HEADER
+// full=true repaints the static chrome (bronze bar + mascot + wordmark +
+// version). The live status line -- honest GPS (module / acquiring / fix + real
+// sat count) and SD state -- is always refreshed. This runs on the periodic tick
+// while the home screen is up, so status is truthful and live, and the Marauder
+// status bar never paints here (no overlap with the wordmark).
+// ------------------------------------------------------------
+void MenuFunctions::drawRigHeader(bool full)
+{
+  auto &tft = display_obj.tft;
+  const uint16_t C_GOLD  = 0xEDA9, C_INK = 0xEF3B, C_DIM = 0x8C0E,
+                 C_DIM2  = 0x5AC9, C_BRONZE = STATUSBAR_COLOR, C_GREEN = 0x6E6D,
+                 C_AMBER = 0xFD20, C_RED = 0xD309;
+
+  if (full) {
+    tft.fillRect(0, 0, TFT_WIDTH, 24, C_BRONZE);
+    tft.setSwapBytes(true);
+    tft.pushImage(3, 1, GORILLA_MINI_W, GORILLA_MINI_H, gorilla_mini);
+    tft.setSwapBytes(false);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(C_GOLD, C_BRONZE);
+    tft.drawString("WARROOM RIG", 30, 5, 2);
+  }
+
+  // ---- battery: top-right of the bronze bar, refreshed on every call ----
+  // battery_obj.battery_level is kept fresh by the main loop; draw a clean vector
+  // battery glyph + NN% coloured by charge (green/amber/red). Replaces the version
+  // readout (which lives on the boot splash).
+  #ifdef HAS_BATTERY
+    int8_t batt = battery_obj.battery_level;
+    tft.fillRect(152, 0, TFT_WIDTH - 152, 24, C_BRONZE);
+    if (batt >= 0) {
+      if (batt > 100) batt = 100;
+      uint16_t bc = (batt >= 40) ? C_GREEN : (batt >= 20 ? C_AMBER : C_RED);
+      const int bx = 160, by = 6;
+      tft.drawRoundRect(bx, by, 20, 11, 2, bc);                     // body
+      tft.fillRect(bx + 20, by + 3, 2, 5, bc);                      // nub
+      int fillw = (16 * batt) / 100;
+      if (fillw > 0) tft.fillRect(bx + 2, by + 2, fillw, 7, bc);    // charge
+      tft.setTextDatum(MR_DATUM);
+      tft.setTextColor(bc, C_BRONZE);
+      tft.drawString(String((int)batt) + "%", TFT_WIDTH - 6, 11, 2);
+    }
+  #endif
+
+  // ---- live status line (cleared + redrawn every refresh) ----
+  tft.fillRect(0, 24, TFT_WIDTH, 20, TFT_BLACK);
+
+  uint16_t dotc = C_DIM2, txtc = C_DIM;
+  String gtxt = "NO GPS MODULE";
+  #ifdef HAS_GPS
+    if (gps_obj.getGpsModuleStatus()) {
+      int sats = gps_obj.getNumSats();
+      if (gps_obj.getFixStatus()) {
+        dotc = C_GREEN; txtc = C_INK;  gtxt = "GPS FIX  " + String(sats) + " sats";
+      } else {
+        dotc = C_AMBER; txtc = C_DIM;  gtxt = "ACQUIRING  " + String(sats) + " sats";
+      }
+    }
+  #endif
+  tft.fillCircle(9, 34, 3, dotc);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(txtc, TFT_BLACK);
+  tft.drawString(gtxt, 17, 34, 1);
+
+  #ifdef HAS_SD
+    bool sdok = sd_obj.supported;
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(sdok ? C_GREEN : C_RED, TFT_BLACK);
+    tft.drawString(sdok ? "SD OK" : "NO SD", TFT_WIDTH - 6, 34, 1);
+  #endif
+
+  tft.setTextDatum(TL_DATUM);
+}
+
+// ============================================================
+// warroom-rig HOME CONSOLE
+// Bespoke full-screen dashboard that replaces the Marauder button list for the
+// main menu. The three rig actions are big tap-cards; the Marauder scanners sit
+// behind one dim "Tools" strip. Selection is driven by the normal U/D nav via
+// mainMenu.selected (0=Rig, 1=Upload, 2=File Server, 3=Tools); this repaints the
+// whole console so the gold highlight follows the selection. C fires the real
+// mainMenu node callable, so navigation logic is untouched.
+// ============================================================
+void MenuFunctions::drawRigHome(int only)
+{
+  auto &tft = display_obj.tft;
+
+  const uint16_t C_GOLD   = 0xEDA9;  // TFTGOLD
+  const uint16_t C_GOLDD  = 0x9BC6;  // dim gold (idle icons/chevrons)
+  const uint16_t C_INK    = 0xEF3B;  // warm off-white
+  const uint16_t C_DIM    = 0x8C0E;  // muted label
+  const uint16_t C_DIM2   = 0x5AC9;  // faint hint
+  const uint16_t C_PANEL  = 0x1081;  // idle card fill
+  const uint16_t C_PANEL2 = 0x18C2;  // selected card fill
+  const uint16_t C_PANEL3 = 0x2902;  // idle card outline
+  const uint16_t sel = current_menu->selected;
+
+  const char* titles[3] = { "RIG MODE", "UPLOAD", "FILE SERVER" };
+  const char* subs[3]   = { "Scan / log / collect",
+                            "Push logs to wdgwars",
+                            "Config / download / AP" };
+  const uint8_t cicons[3] = { WIFI, UPDATE, GENERAL_APPS };
+
+  const int cx = 8, cw = TFT_WIDTH - 16, chh = 68, y0 = 46, pitch = 78;
+
+  // Full paint (only < 0) clears the screen and draws the header; a partial
+  // repaint (only >= 0) touches just one card/strip so U/D nav never flashes.
+  if (only < 0) {
+    tft.fillScreen(TFT_BLACK);
+    this->drawRigHeader(true);
+  }
+
+  // ---- action cards ----
+  for (int i = 0; i < 3; i++) {
+    if (only >= 0 && only != i) continue;
+    int y = y0 + i * pitch;
+    bool s = (sel == (uint16_t)i);
+    uint16_t fill = s ? C_PANEL2 : C_PANEL;
+    tft.fillRoundRect(cx, y, cw, chh, 8, fill);
+    if (s) {
+      tft.drawRoundRect(cx, y, cw, chh, 8, C_GOLD);
+      tft.drawRoundRect(cx + 1, y + 1, cw - 2, chh - 2, 7, C_GOLD);
+      tft.fillRect(cx + 6, y + 10, 4, chh - 20, C_GOLD);   // accent bar
+    } else {
+      tft.drawRoundRect(cx, y, cw, chh, 8, C_PANEL3);
+    }
+    // icon glyph. Marauder XBitmaps carry the glyph in the 0-bits, the surround
+    // in the 1-bits -> paint 1-bits in the card fill (blend away) and 0-bits in
+    // the icon colour, so the symbol floats cleanly with no black box.
+    tft.drawXBitmap(20, y + (chh - ICON_H) / 2, menu_icons[cicons[i]],
+                    ICON_W, ICON_H, fill, s ? C_GOLD : C_GOLDD);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(s ? C_GOLD : C_INK, fill);
+    tft.drawString(titles[i], 52, y + 10, 4);
+    tft.setTextColor(C_DIM, fill);
+    tft.drawString(subs[i], 53, y + 44, 1);
+    uint16_t chev = s ? C_GOLD : C_DIM2;
+    int ax = cx + cw - 16, ay = y + chh / 2;
+    tft.fillTriangle(ax, ay - 6, ax, ay + 6, ax + 7, ay, chev);
+  }
+
+  // ---- tools strip (selection index 3) ----
+  if (only < 0 || only == 3) {
+    bool st = (sel == 3);
+    const int ty = 294, th = TFT_HEIGHT - 294;  // 26px
+    tft.fillRect(0, ty, TFT_WIDTH, th, st ? C_PANEL2 : (uint16_t)TFT_BLACK);
+    tft.drawFastHLine(0, ty, TFT_WIDTH, st ? C_GOLD : C_PANEL3);
+    tft.drawXBitmap(6, ty + (th - ICON_H) / 2, menu_icons[SCANNERS],
+                    ICON_W, ICON_H, st ? C_PANEL2 : (uint16_t)TFT_BLACK, st ? C_GOLD : C_DIM);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(st ? C_GOLD : C_DIM, st ? C_PANEL2 : (uint16_t)TFT_BLACK);
+    tft.drawString("TOOLS", 34, ty + th / 2, 2);
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(C_DIM2, st ? C_PANEL2 : (uint16_t)TFT_BLACK);
+    tft.drawString("WiFi / BT / GPS / System", TFT_WIDTH - 6, ty + th / 2, 1);
+  }
+
+  tft.setTextDatum(TL_DATUM);  // restore library default
+}
+
 void MenuFunctions::displayCurrentMenu(int start_index)
 {
+  // warroom-rig: the main menu is a bespoke rig console, not a button list.
+  if (current_menu == &mainMenu) { this->drawRigHome(); return; }
   //Serial.println(F("Displaying current menu..."));
   display_obj.clearScreen();
   display_obj.updateBanner(current_menu->name);

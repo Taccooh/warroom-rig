@@ -192,7 +192,7 @@ class MenuFunctions
     Menu generateSSIDsMenu;
 
     Menu foxHuntMenu;
-    Menu wdgwarsMenu;
+    Menu toolsMenu;
 
     //static void lv_tick_handler();
 
@@ -201,6 +201,8 @@ class MenuFunctions
     void setupSDFileList(bool update = false);
     void buildSDFileMenu(bool update = false);
     void displayMenuButtons();
+    void drawRigHome(int only = -1);   // warroom-rig home console; only>=0 repaints just one element (flicker-free nav)
+    void drawRigHeader(bool full);     // warroom-rig home header: mascot/wordmark (full) + honest live GPS/SD line
     uint16_t getColor(uint16_t color);
     void drawAvgLine(int16_t value);
     void drawMaxLine(int16_t value, uint16_t color);
