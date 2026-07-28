@@ -1,7 +1,7 @@
-# Phase 1.2 — Node ↔ Core Protokoll (Reverse-Engineered)
+# Node ↔ Core wire protocol (reverse-engineered)
 
 Datum: 2026-05-06
-Quelle: `D:\Projekte\marauder_core_mode\ESP32DualBandWardriver\` HEAD `b674bd8`
+Quelle: reverse-engineered aus `ESP32DualBandWardriver` (Just Call Me Koko, MIT), Stand v2.2.0.
 Ziel: Vollstaendige Spezifikation des Wire-Protocols, damit Marauder v7 als CORE die unmodifizierten C5-Wardriver-Nodes bedienen kann.
 
 Alle File:Line-Referenzen beziehen sich auf das Wardriver-Repo, sofern nicht anders genannt.
@@ -408,7 +408,7 @@ Alle Standard-IDF — auf Arduino-ESP32-Core 2.x und 3.x verfuegbar. Marauder nu
 
 ### Bekannte Inkompatibilitaeten
 
-1. **Channel-Konflikt** mit Marauders aktiven Modes (Beacon-Spam, Probe-Scan, EvilPortal). CORE-Mode muss exklusiv-blockierend sein.
+1. **Channel-Konflikt** mit anderen Scan-Modes des Marauder (z.B. Probe-Scan, Packet-Monitor). CORE-Mode muss exklusiv-blockierend sein.
 2. **PMK ist global** in ESP-NOW. Wenn Marauder ESP-NOW fuer andere Features nutzt (Beacon-Spam nicht, aber evtl. fuer andere Tools), wuerden die Schluessel kollidieren. **In 1.5 zu pruefen** ob Marauder ESP-NOW aktuell nutzt.
 3. **Encrypted-Peer-Limit von 6** im IDF — fuer Marauder als CORE kompatibel zur C5-Wardriver-Doku, aber harte Untergrenze; build-time-Tweak moeglich.
 4. **NimBLE-Coexistence** — Wardriver nutzt NimBLE parallel zu ESP-NOW auf classic ESP32 (im Encrypted-Mode am Anfang nicht aktiv, aber generell). Marauder hat NimBLE-Submodul, daher kein Konflikt erwartet.
