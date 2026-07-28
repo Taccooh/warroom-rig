@@ -13,68 +13,54 @@ It is derived from two MIT-licensed projects by
 [ESP32Marauder](https://github.com/justcallmekoko/ESP32Marauder) (the handheld
 hub) and
 [ESP32DualBandWardriver](https://github.com/justcallmekoko/ESP32DualBandWardriver)
-(the C5/NodeMCU nodes). This repository is **not** affiliated with or endorsed by
-Koko. Full attribution and licenses: [CREDITS.md](CREDITS.md).
+(the C5 / NodeMCU nodes). This repository is **not** affiliated with or endorsed
+by Koko. Full attribution and licenses: [CREDITS.md](CREDITS.md).
 
-> [!WARNING]
-> **Status: freshly forked, carve-down in progress.**
-> This tree still contains the **complete upstream Marauder offensive tooling**
-> (deauth, beacon/BLE spam, Evil Portal, EAPOL capture, port/net recon). The
-> whole point of warroom-rig is to **remove** that and ship a rig that can *only*
-> wardrive — passive collection, nothing offensive. Until the strip lands, treat
-> this exactly like upstream Marauder and read the authorized-use notes below.
-> See [the carve-down plan](#carve-down-plan).
+## Passive by construction
 
-## What it is for
+warroom-rig is a Marauder fork with the **offensive tooling removed**. The
+active-attack code paths — deauth, beacon/SSID spam, BLE spam, Evil Portal,
+port/network recon, MAC spoofing, the serial CommandLine — are gone, and the
+wardrive / EAPOL / probe scans have had their active-transmit calls stripped out.
+The offensive modules and the menu / dispatch paths that launched them are
+**removed** — the rig only collects.
 
-Wardriving: passively logging the metadata WiFi access points broadcast anyway
-(BSSID, SSID, channel, signal strength) together with a GPS position, for mapping,
-the wdgwars game, and feeding coverage back into warroom. That is the entire
-intended scope. Everything warroom-rig keeps is **passive data collection**.
+What that leaves is all passive:
 
-Until the offensive upstream modules are removed, the usual rules apply to them:
+- Wardriving: logging the metadata WiFi access points broadcast anyway (BSSID,
+  SSID, channel, RSSI) with a GPS position, for mapping, the wdgwars game, and
+  feeding coverage back into warroom.
+- Passive analysis views (signal/channel analyzer, packet monitor) and
+  receive-only detectors are kept as harmless, flash-cheap extras.
 
-- **Passive collection is what this is for.** Logging broadcast beacons is legal
-  in most places; connecting to, probing, deauthenticating, or interfering with
-  networks or devices you do not own is not, and is not what this rig is for.
-- **The inherited offensive tools** (deauth, spam, portal, …) are for use **only
-  on networks and devices you own or have explicit written permission to test**,
-  and they are on their way out of this tree entirely.
-- **Know your local law.** Radio, privacy, and wiretapping rules vary widely.
-- **Respect people.** Wardriving maps infrastructure, not individuals.
+Wardriving law varies — logging broadcast beacons is legal in most places;
+connecting to, probing, or interfering with networks you do not own is not, and
+is not what this rig does. Wardriving maps infrastructure, not individuals.
 
-## The three kept features
+## The three modules
 
-These are the modules warroom-rig is built around — all **passive**, all staying:
+warroom-rig is built around three passive modules on top of the wardrive scanner:
 
 | Module | What it does |
 |---|---|
-| **Wardrive Core** | Turns the handheld into an ESP-NOW aggregator hub for ESP32-C5 or NodeMCU-32 wardrive nodes. Enriches every node record with the hub's GPS fix and writes WiGLE CSV to SD. Wire-protocol byte-compatible with `ESP32DualBandWardriver`. |
-| **wdgwars / warroom upload** | Uploads `wardrive_*.log` files from SD to the game API over HTTPS (`X-API-Key`, embedded CA bundle). On-device file picker, newest-first. |
-| **SD web config + browser** | WPA2 SoftAP + AsyncWebServer over the SD card: list/download/delete files and set SSID/pass/API-key via a `/wdgcfg` form, all in a browser at `http://192.168.4.1/`. |
+| **Rig Mode** (Wardrive Core) | Turns the handheld into an ESP-NOW aggregator hub for ESP32-C5 or NodeMCU-32 wardrive nodes. Enriches every node record with the hub's GPS fix and writes WiGLE CSV to SD. Wire-protocol byte-compatible with `ESP32DualBandWardriver`. |
+| **Upload** | Uploads `wardrive_*.log` files from SD to the game API over HTTPS (`X-API-Key` read from SD, embedded CA bundle). On-device file picker, newest-first. |
+| **File Server** | WPA2 SoftAP + AsyncWebServer over the SD card: list / download / delete files and set SSID / pass / API-key via a `/wdgcfg` form, in a browser at `http://192.168.4.1/`. |
 
-Node side (`ESP32DualBandWardriver/`) is already a clean passive wardriver and
-carries the C5-Zero / NodeMCU-32 headless-node build targets in its `configs.h`.
-Nothing to strip there — it comes across as-is.
+The handheld boots to a bespoke rig home console (gorilla splash → Rig Mode /
+Upload / File Server up front, the inherited Marauder scanners tucked behind one
+"Tools" door) with an honest live GPS / SD / battery header.
 
-## Carve-down plan
+## Nodes
 
-warroom-rig starts as a full Marauder and gets reduced to a wardriving rig. The
-target: remove all active-attack code paths, keep the passive scan + wardrive +
-GPS + SD + the three modules above.
-
-- **Out:** deauth, beacon/SSID spam, BLE spam, Evil Portal, EAPOL/PMKID capture,
-  pwnagotchi, SAE/CSA attacks, port/net recon, MAC spoofing — and the files that
-  exist only to serve them (`EvilPortal.*`, `Keyboard.*`/`TouchKeyboard.*`, most
-  of `CommandLine.cpp`), plus their menu entries.
-- **Stays:** wardrive AP/BLE scan, GPS, WiGLE logging, the ESP-NOW Core, the
-  uploader, the SD web-config — and the passive analysis views (signal/channel
-  analyzer, packet monitor) as harmless, flash-cheap keepers.
-- **Frees the flash** the three modules need to all fit at once (today > 92 %).
-
-The coupling is small: the three modules touch only `currentScanMode`,
-`header_line`, and `startLog()` on the scan class — no attack symbol — so the cut
-is scoped, not a rewrite.
+The node firmware in `ESP32DualBandWardriver/` is **Koko's ESP32DualBandWardriver
+v2.2.0** — his scanner, his GPS/SD/WiGLE logging, and his complete ESP-NOW
+CORE / NODE / SOLO swarm. Our changes there are **board ports + fleet
+adaptations**: the headless **C5-Zero** (ESP32-C5) and **NodeMCU-32** targets,
+headless compile-time role selection, session gating, a broadcast-peer fix,
+single-node BLE-host election, and 2.4-GHz-only-node channel handling. For the
+stock node experience, use [Koko's upstream](https://github.com/justcallmekoko/ESP32DualBandWardriver)
+directly.
 
 ## Build
 
@@ -86,7 +72,7 @@ Prerequisites:
 - Handheld hub (LOLIN D32 / Marauder v7): FQBN
   `esp32:esp32:d32:PartitionScheme=min_spiffs`
 
-Hub one-liner from this directory (build flags select the modules):
+Hub one-liner from this directory:
 
 ```bash
 ARDUINO_CLI=/path/to/arduino-cli
@@ -103,19 +89,25 @@ $ARDUINO_CLI compile \
     "$SRC"
 ```
 
-Append `--upload -p COM<N>` to flash. The node build (C5-Zero / NodeMCU-32) is
-documented in `ESP32DualBandWardriver/`.
+Append `--upload -p COM<N>` to flash. The build flags select the three modules;
+they are inherited from the Marauder-fork layout. The node build (C5-Zero /
+NodeMCU-32) is documented in `RELEASING.md`.
 
-> Build flags are how the modules are selected **today**, inherited from the
-> Marauder-fork layout. Once the carve-down lands and the offensive code is gone,
-> the passive rig becomes the default build and these become plain defaults.
+## Releases
+
+Prebuilt, checksummed firmware ships on two independent tag tracks — see
+[Releases](../../releases) and [RELEASING.md](RELEASING.md):
+
+- **`core-vX.Y`** — the handheld hub firmware (this repo's work).
+- **`node-v<koko>-warroom.N`** — the node firmware; Koko's v2.2.0 base is carried
+  in the version, and the notes credit him as the author.
 
 ## Repo layout
 
 ```
 ESP32Marauder/           # Hub source (MIT, upstream by justcallmekoko) + our edits
 ESP32DualBandWardriver/  # Node firmware (MIT, upstream by justcallmekoko), our
-                         # C5-Zero / NodeMCU-32 headless targets in configs.h
+                         # C5-Zero / NodeMCU-32 headless targets + fleet fixes
 libs/                    # Vendored dependencies (see CREDITS.md)
 docs/                    # Wire spec etc.
 ```
