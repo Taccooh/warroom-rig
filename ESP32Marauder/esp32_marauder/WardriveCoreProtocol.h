@@ -1,7 +1,7 @@
 // WardriveCoreProtocol.h
 //
 // Wire-Protocol fuer Marauder v7 Core Mode <-> ESP32DualBandWardriver Nodes.
-// Header-only. Byte-exakt kompatibel zu Wardriver `b674bd8`.
+// Header-only. Byte-exakt kompatibel zu ESP32DualBandWardriver v2.2.0.
 //
 // Adapted from JCMK ESP32DualBandWardriver (src/WiFiOps.h:53-69, src/WiFiOps.cpp:4,44-74),
 // MIT License, Copyright (c) 2025 Just Call Me Koko.
