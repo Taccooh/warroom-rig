@@ -30,7 +30,7 @@ static const IPAddress AP_SUBNET(255, 255, 255, 0);
 static const uint16_t HTTP_PORT = 80;
 static const uint8_t AP_CHANNEL = 6;
 static const uint8_t AP_MAX_CONN = 4;
-static const char* DEFAULT_PASSWORD = "marauder123";
+static const char* DEFAULT_PASSWORD = "warroomrig";
 static const char* SETTINGS_PATH = "/fileserver.txt";
 
 // Display + exit-hold tuning. Reuse the WDGWARS constants if defined, else

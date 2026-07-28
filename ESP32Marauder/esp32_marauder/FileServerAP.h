@@ -22,8 +22,8 @@ class AsyncWebServer;
 // user has accumulated, without popping the microSD.
 //
 // Defaults:
-//   SSID:     Marauder-Files-XXXX   (XXXX = last 2 bytes of STA MAC, hex)
-//   Password: marauder123           (changeable via /fileserver.txt on SD)
+//   SSID:     warroom-rig-Files-XXXX  (XXXX = last 2 bytes of STA MAC, hex)
+//   Password: warroomrig              (changeable via /fileserver.txt on SD)
 //   IP:       192.168.4.1
 //
 // HTTP routes:

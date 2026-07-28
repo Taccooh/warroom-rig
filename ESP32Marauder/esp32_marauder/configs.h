@@ -40,7 +40,7 @@
   // Spannt einen WPA2-SoftAP + HTTP-Server auf der SD-Karte auf. Praktisch
   // im Feld um Wardrive-Logs (oder beliebige andere Dateien) per Browser
   // zu ziehen ohne SD-Karte rauspopeln zu muessen.
-  // Default-SSID: Marauder-Files-XXXX, Default-PW: marauder123. Beides via
+  // Default-SSID: warroom-rig-Files-XXXX, Default-PW: warroomrig. Beides via
   // optionalem /fileserver.txt auf SD ueberschreibbar.
   //#define MARAUDER_FILE_SERVER_AP
 
