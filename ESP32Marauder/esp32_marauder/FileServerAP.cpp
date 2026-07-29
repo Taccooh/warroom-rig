@@ -729,7 +729,11 @@ void FileServerAP::drawStaticFrame() {
 
         display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
         display_obj.tft.setCursor(FS_X, FS_Y_FOOTER);
-        display_obj.tft.print("[CENTER hold to exit]");
+        #ifdef HAS_TOUCH
+            display_obj.tft.print("[tap screen to exit]");
+        #else
+            display_obj.tft.print("[CENTER hold to exit]");
+        #endif
     #endif
 }
 

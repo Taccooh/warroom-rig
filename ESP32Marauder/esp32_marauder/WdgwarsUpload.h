@@ -120,6 +120,9 @@ private:
     void renderDisplay();
     void renderConfirmPrompt();
     void renderSelectList();
+    #ifdef HAS_TOUCH
+    void renderSelectListTouch();   // large tappable rows + scroll/action bar (V8)
+    #endif
     void runSelectionModal();   // blocking pick UI (owns the buttons like Core Mode)
     void handleCenterLongPressForExit();
 };

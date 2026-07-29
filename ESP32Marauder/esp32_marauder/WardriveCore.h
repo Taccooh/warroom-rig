@@ -114,6 +114,15 @@ public:
     bool    isCollecting() const { return collecting; }
     uint8_t getNodeCount();      // aktive registrierte Nodes (fuer Lobby-Display)
 
+    #ifdef HAS_TOUCH
+    // Touch boards (Marauder V8): the R-button session menu doesn't exist, so the
+    // Start/Stop/Re-Sync actions live as on-screen buttons drawn by
+    // drawTouchControls(). handleTouch() maps a tap to an action and returns true
+    // ONLY if the Exit button was hit (the caller then stops the scan). Called
+    // from MenuFunctions before the generic tap-to-exit so buttons aren't swallowed.
+    bool    handleTouch(uint16_t x, uint16_t y);
+    #endif
+
     // Static ESP-NOW-Recv-Callback. Schreibt RX in die Queue. Laeuft im
     // WiFi-Task-Context, daher minimal: Magic-Check, Type-Check, enqueue.
     static void onDataRecv_static(const esp_now_recv_info_t* info,
@@ -162,6 +171,9 @@ private:
     // ---- Display ----
     void drawCoreModeFrame();            // Init-Once-Layout
     void refreshCoreDisplay();           // Periodic-Refresh
+    #ifdef HAS_TOUCH
+    void drawTouchControls();            // on-screen Start/Stop/Re-Sync/Exit bar (V8)
+    #endif
 
     // ---- Helpers ----
     static uint16_t macToSuffix(const uint8_t* mac);

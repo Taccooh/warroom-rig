@@ -5,7 +5,7 @@ independent tag tracks in this one repo:
 
 | Track | Runs on | Tag scheme | Internal version |
 |---|---|---|---|
-| **Core (hub)** | Marauder v7 / LOLIN D32 (ESP32) | `core-vX.Y` | `WARROOM_RIG_VERSION` |
+| **Core (hub)** | Marauder v7 (ESP32) · Marauder v8 (ESP32-C5, touch) | `core-vX.Y` | `WARROOM_RIG_VERSION` |
 | **Node** | Waveshare C5-Zero (ESP32-C5), NodeMCU-32 | `node-v<koko>-warroom.N` | `FIRMWARE_VERSION` |
 
 They version independently: a node fix must not force a core release, and vice
@@ -47,6 +47,41 @@ esptool.py --chip esp32 -p <PORT> write_flash 0x0 warroom-rig-core-vX.Y-merged.b
 ```
 
 or `arduino-cli upload -p <PORT> --fqbn esp32:esp32:d32 ...`.
+
+### Marauder v8 variant (ESP32-C5, touch)
+
+Same hub firmware, built for the touch-only ESP32-C5. Selected by `-DMARAUDER_V8`
+instead of `-DMARAUDER_V7`; the touch UIs (home console, Rig Mode session
+buttons, Upload file picker) are all `#ifdef HAS_TOUCH` and only exist here.
+
+Key differences from the v7 build:
+- **Chip/FQBN:** `esp32:esp32:esp32c5`. `CDCOnBoot=cdc` is mandatory (else the
+  USB-CDC console stays silent), same as the C5 node.
+- **Partition:** `huge_app` (3 MB app / 1 MB SPIFFS, **no OTA**). The image is
+  ~2.17 MB and does not fit `min_spiffs`; OTA is dropped because the rig is
+  USB-flashed. (v7 keeps `min_spiffs` + OTA.)
+- **Bootloader offset is `0x2000`, not `0x1000`** — a C5 quirk. The merged image
+  already places it correctly, so flashing `merged.bin` at `0x0` is safe.
+- Needs a TFT_eSPI that knows the C5: this repo's vendored copy is patched (route
+  the C5 through the generic ESP32 processor path + the C3-style RISC-V register
+  fixes; see the `[warroom-rig]` notes in `libs/CustomTFT_eSPI/Processors/TFT_eSPI_ESP32.h`).
+
+```bash
+$ARDUINO_CLI compile \
+  --fqbn "esp32:esp32:esp32c5:CDCOnBoot=cdc,PartitionScheme=huge_app,FlashSize=4M" \
+  $LIB_ARGS \
+  --build-property "compiler.cpp.extra_flags=-DMARAUDER_V8 -DMARAUDER_CORE_MODE -DMARAUDER_WDGWARS_UPLOAD -DMARAUDER_FILE_SERVER_AP" \
+  --output-dir ./out-v8 \
+  ESP32Marauder/esp32_marauder/esp32_marauder.ino
+```
+
+**Flash** (merged image; handles the 0x2000 bootloader offset internally):
+
+```bash
+python -m esptool --chip esp32c5 -p <PORT> -b 921600 \
+  --before default-reset --after hard-reset \
+  write-flash 0x0 out-v8/esp32_marauder.ino.merged.bin
+```
 
 ---
 

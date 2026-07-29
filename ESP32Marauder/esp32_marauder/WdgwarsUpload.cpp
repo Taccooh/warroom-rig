@@ -819,6 +819,137 @@ void WdgwarsUpload::renderSelectList() {
     #endif
 }
 
+#ifdef HAS_TOUCH
+// ============================================================
+// Touch file picker (Marauder V8)
+// ============================================================
+//
+// Large tappable rows the user can actually hit with a finger, plus a scroll
+// bar (pages of WT_ROWS) and an action bar. Geometry is shared between the
+// renderer and the hit-test so the two never drift.
+static const int WT_LIST_TOP    = 52;   // first row y
+static const int WT_ROW_H       = 32;   // row pitch
+static const int WT_ROW_INNER_H = 30;   // drawn row height
+static const int WT_ROWS        = 5;    // visible rows per page
+static const int WT_ROW_X       = 2;
+static const int WT_ROW_W       = 236;
+// Scroll bar.
+static const int WT_SCR_Y = 216, WT_SCR_H = 44;
+static const int WT_UP_X  = 4,   WT_UP_W  = 112;
+static const int WT_DN_X  = 124, WT_DN_W  = 112;
+// Action bar.
+static const int WT_ACT_Y  = 266, WT_ACT_H = 46;
+static const int WT_ALL_X  = 4,   WT_ALL_W  = 72;
+static const int WT_GO_X   = 80,  WT_GO_W   = 80;
+static const int WT_EXIT_X = 164, WT_EXIT_W = 72;
+
+enum { WTS_NONE = -1, WTS_UP = -2, WTS_DOWN = -3, WTS_ALL = -4, WTS_GO = -5, WTS_EXIT = -6 };
+
+// Return a visible-row index [0..visible), or one of the WTS_* action codes.
+static int wdgTouchHitTest(uint16_t x, uint16_t y, uint8_t visible) {
+    for (int r = 0; r < visible; r++) {
+        int ry = WT_LIST_TOP + r * WT_ROW_H;
+        if ((int)y >= ry && (int)y < ry + WT_ROW_INNER_H &&
+            (int)x >= WT_ROW_X && (int)x <= WT_ROW_X + WT_ROW_W)
+            return r;
+    }
+    if ((int)y >= WT_SCR_Y && (int)y <= WT_SCR_Y + WT_SCR_H) {
+        if ((int)x >= WT_UP_X && (int)x <= WT_UP_X + WT_UP_W) return WTS_UP;
+        if ((int)x >= WT_DN_X && (int)x <= WT_DN_X + WT_DN_W) return WTS_DOWN;
+    }
+    if ((int)y >= WT_ACT_Y && (int)y <= WT_ACT_Y + WT_ACT_H) {
+        if ((int)x >= WT_ALL_X  && (int)x <= WT_ALL_X  + WT_ALL_W ) return WTS_ALL;
+        if ((int)x >= WT_GO_X   && (int)x <= WT_GO_X   + WT_GO_W  ) return WTS_GO;
+        if ((int)x >= WT_EXIT_X && (int)x <= WT_EXIT_X + WT_EXIT_W) return WTS_EXIT;
+    }
+    return WTS_NONE;
+}
+
+static void wdgDrawButton(int x, int y, int w, int h, const char* label,
+                          uint16_t fill, uint16_t border, bool enabled = true) {
+    uint16_t f = enabled ? fill : TFT_BLACK;
+    uint16_t b = enabled ? border : TFT_DARKGREY;
+    display_obj.tft.fillRoundRect(x, y, w, h, 5, f);
+    display_obj.tft.drawRoundRect(x, y, w, h, 5, b);
+    display_obj.tft.setTextSize(2);
+    display_obj.tft.setTextColor(b, f);
+    int tw = (int)strlen(label) * 12;
+    int tx = x + (w - tw) / 2; if (tx < x + 3) tx = x + 3;
+    int ty = y + (h - 16) / 2;
+    display_obj.tft.setCursor(tx, ty);
+    display_obj.tft.print(label);
+}
+
+void WdgwarsUpload::renderSelectListTouch() {
+    #ifdef HAS_SCREEN
+        const int16_t top = 34;   // keep the framework status bar
+        display_obj.tft.fillRect(0, top, display_obj.tft.width(),
+                                 display_obj.tft.height() - top, TFT_BLACK);
+
+        uint8_t sel_n = 0;
+        for (uint8_t i = 0; i < pending_count; i++) if (file_selected[i]) sel_n++;
+
+        display_obj.tft.setTextSize(1);
+        display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+        display_obj.tft.setCursor(4, 40);
+        display_obj.tft.printf("Tap logs   %u/%u selected", sel_n, pending_count);
+
+        // File rows.
+        for (int r = 0; r < WT_ROWS; r++) {
+            uint8_t i = sel_top + r;
+            if (i >= pending_count) break;
+            int ry = WT_LIST_TOP + r * WT_ROW_H;
+            bool on = file_selected[i];
+
+            if (on) display_obj.tft.fillRoundRect(WT_ROW_X, ry, WT_ROW_W, WT_ROW_INNER_H, 4, TFT_DARKGREEN);
+            display_obj.tft.drawRoundRect(WT_ROW_X, ry, WT_ROW_W, WT_ROW_INNER_H, 4,
+                                          on ? TFT_GREEN : TFT_DARKGREY);
+            // Checkbox.
+            int cbx = WT_ROW_X + 8, cby = ry + (WT_ROW_INNER_H - 16) / 2;
+            display_obj.tft.drawRect(cbx, cby, 16, 16, on ? TFT_GREEN : TFT_LIGHTGREY);
+            if (on) display_obj.tft.fillRect(cbx + 3, cby + 3, 10, 10, TFT_GREEN);
+
+            // Filename (strip path + ".log", trim to fit).
+            String name = pending_files[i];
+            int s = name.lastIndexOf('/');
+            if (s >= 0) name = name.substring(s + 1);
+            int dot = name.lastIndexOf(".log");
+            if (dot > 0) name = name.substring(0, dot);
+            if (name.length() > 12) name = name.substring(0, 12);
+            display_obj.tft.setTextSize(2);
+            display_obj.tft.setTextColor(on ? TFT_WHITE : TFT_LIGHTGREY,
+                                         on ? TFT_DARKGREEN : TFT_BLACK);
+            display_obj.tft.setCursor(cbx + 24, ry + 7);
+            display_obj.tft.print(name);
+
+            // Size, small, right-aligned-ish.
+            uint32_t sz = file_size[i];
+            String szs = (sz >= 1024) ? (String((sz + 512) / 1024) + "K")
+                                      : (String(sz) + "B");
+            display_obj.tft.setTextSize(1);
+            display_obj.tft.setTextColor(on ? TFT_GREEN : TFT_DARKGREY,
+                                         on ? TFT_DARKGREEN : TFT_BLACK);
+            display_obj.tft.setCursor(WT_ROW_X + WT_ROW_W - 40, ry + 11);
+            display_obj.tft.print(szs);
+        }
+
+        // Scroll bar (paged). Greyed out when there is nothing to scroll.
+        bool can_up   = (sel_top > 0);
+        bool can_down = (sel_top + WT_ROWS < pending_count);
+        wdgDrawButton(WT_UP_X, WT_SCR_Y, WT_UP_W, WT_SCR_H, "UP",   TFT_NAVY, TFT_CYAN, can_up);
+        wdgDrawButton(WT_DN_X, WT_SCR_Y, WT_DN_W, WT_SCR_H, "DOWN", TFT_NAVY, TFT_CYAN, can_down);
+
+        // Action bar.
+        wdgDrawButton(WT_ALL_X, WT_ACT_Y, WT_ALL_W, WT_ACT_H, "ALL", TFT_DARKGREY, TFT_WHITE);
+        char golbl[16];
+        snprintf(golbl, sizeof(golbl), "GO %u", (unsigned)sel_n);
+        wdgDrawButton(WT_GO_X, WT_ACT_Y, WT_GO_W, WT_ACT_H, golbl,
+                      sel_n ? TFT_DARKGREEN : TFT_BLACK, sel_n ? TFT_GREEN : TFT_DARKGREY, sel_n > 0);
+        wdgDrawButton(WT_EXIT_X, WT_ACT_Y, WT_EXIT_W, WT_ACT_H, "EXIT", TFT_MAROON, TFT_RED);
+    #endif
+}
+#endif // HAS_TOUCH
+
 // Blocking pick UI. Like the Core Mode session menu, it owns the buttons for its
 // whole duration via a delay()-yielding loop — so MenuFunctions' stop-scan handler
 // cannot fire mid-selection (which was making CENTER exit instead of toggling).
@@ -903,6 +1034,60 @@ void WdgwarsUpload::runSelectionModal() {
             else if (sel_cursor >= sel_top + rows) sel_top = sel_cursor - rows + 1;
 
             if (changed) renderSelectList();
+            delay(15);
+        }
+    #elif defined(HAS_TOUCH)
+        // Touch pick UI (Marauder V8). Owns the screen for its whole duration,
+        // exactly like the button loop above, so the menu's stop-scan handler
+        // cannot fire mid-selection. Sets CONNECTING_AP on GO, or deinit()s on EXIT.
+        { uint16_t rx, ry; while (display_obj.updateTouch(&rx, &ry)) delay(5); }  // release opener
+        sel_top = 0;
+        renderSelectListTouch();
+        for (;;) {
+            uint16_t tx, ty;
+            if (display_obj.updateTouch(&tx, &ty)) {
+                // Wait for release, keeping the last (finger-up) coordinates.
+                uint16_t lx = tx, ly = ty;
+                while (display_obj.updateTouch(&tx, &ty)) { lx = tx; ly = ty; delay(5); }
+
+                uint8_t visible = pending_count - sel_top;
+                if (visible > WT_ROWS) visible = WT_ROWS;
+                int act = wdgTouchHitTest(lx, ly, visible);
+
+                if (act >= 0) {                                   // row -> toggle
+                    uint8_t i = sel_top + (uint8_t)act;
+                    if (i < pending_count) {
+                        file_selected[i] = !file_selected[i];
+                        renderSelectListTouch();
+                    }
+                } else if (act == WTS_UP) {
+                    if (sel_top >= WT_ROWS)   { sel_top -= WT_ROWS; renderSelectListTouch(); }
+                    else if (sel_top > 0)     { sel_top = 0;        renderSelectListTouch(); }
+                } else if (act == WTS_DOWN) {
+                    if (sel_top + WT_ROWS < pending_count) { sel_top += WT_ROWS; renderSelectListTouch(); }
+                } else if (act == WTS_ALL) {
+                    bool any_off = false;
+                    for (uint8_t i = 0; i < pending_count; i++)
+                        if (!file_selected[i]) { any_off = true; break; }
+                    for (uint8_t i = 0; i < pending_count; i++) file_selected[i] = any_off;
+                    renderSelectListTouch();
+                } else if (act == WTS_GO) {
+                    uint8_t n = 0;
+                    for (uint8_t i = 0; i < pending_count; i++) if (file_selected[i]) n++;
+                    if (n > 0) {
+                        upload_total = n;
+                        current_idx = 0;
+                        state = State::CONNECTING_AP;
+                        Serial.printf("WDG: uploading %u selected file(s)\n", n);
+                        return;
+                    }
+                    // nothing selected — GO is a no-op (button is greyed anyway)
+                } else if (act == WTS_EXIT) {
+                    Serial.println("WDG: selection cancelled (EXIT tap)");
+                    deinit();
+                    return;
+                }
+            }
             delay(15);
         }
     #else

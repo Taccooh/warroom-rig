@@ -319,6 +319,26 @@ void MenuFunctions::main(uint32_t currentTime)
     }
   #endif
 
+  // warroom-rig touch boards (Marauder V8): module run-views own their taps so
+  // the generic tap-to-exit-scan block below doesn't swallow their on-screen
+  // buttons. Rig Mode (Wardrive Core) has session buttons; hand the tap to it
+  // BEFORE the generic handler, and only exit if its Exit button was hit.
+  #if defined(HAS_TOUCH) && defined(MARAUDER_CORE_MODE)
+    if (pressed && (wifi_scan_obj.currentScanMode == WIFI_SCAN_WAR_DRIVE_CORE)) {
+      uint16_t rx, ry;
+      while (display_obj.updateTouch(&rx, &ry)) delay(5);   // wait for release
+      bool wants_exit = wardrive_core_obj.handleTouch(t_x, t_y);
+      if (wants_exit) {
+        wifi_scan_obj.StartScan(WIFI_SCAN_OFF);
+        display_obj.init();                 // reset text/coords, like generic exit
+        changeMenu(current_menu, true);
+      }
+      x = -1;
+      y = -1;
+      return;
+    }
+  #endif
+
   // This is if there are scans/attacks going on
   #ifdef HAS_ILI9341
     if ((wifi_scan_obj.currentScanMode != WIFI_SCAN_OFF) &&

@@ -13,12 +13,21 @@
 #include "driver/spi_master.h"
 #include "hal/gpio_ll.h"
 
-#if !defined(CONFIG_IDF_TARGET_ESP32C3) && !defined(CONFIG_IDF_TARGET_ESP32S2) && !defined(CONFIG_IDF_TARGET_ESP32)
+// Legacy IDF-3 shim: define CONFIG_IDF_TARGET_ESP32 when the real IDF macro is
+// absent. On modern IDF the correct CONFIG_IDF_TARGET_* is always set, so this
+// must NOT fire for RISC-V targets (e.g. the ESP32-C5 on Marauder V8) — defining
+// it empty poisons `#if CONFIG_IDF_TARGET_ESP32` in hal/sha_types.h. C5 takes the
+// non-classic (#else) SPI path in TFT_eSPI_ESP32.c, same as C3/S2. [warroom-rig]
+#if !defined(CONFIG_IDF_TARGET_ESP32C3) && !defined(CONFIG_IDF_TARGET_ESP32S2) && !defined(CONFIG_IDF_TARGET_ESP32C5) && !defined(CONFIG_IDF_TARGET_ESP32)
   #define CONFIG_IDF_TARGET_ESP32
 #endif
 
-// Fix IDF problems with ESP32C3
-#if CONFIG_IDF_TARGET_ESP32C3
+// Fix IDF problems with ESP32C3 — the same single-core RISC-V register quirks
+// apply verbatim to the ESP32-C5 (Marauder V8): SPI_MOSI_DLEN_REG was renamed to
+// SPI_MS_DLEN_REG, and GPIO.out_w1t{c,s} are struct types needing a .val member.
+// REG_SPI_BASE stays #ifndef-guarded so the C3-only address formula never leaks
+// onto C5 (C5's IDF defines REG_SPI_BASE itself). [warroom-rig]
+#if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C5
   // Fix ESP32C3 IDF bug for missing definition
   #ifndef REG_SPI_BASE
     #define REG_SPI_BASE(i)     (DR_REG_SPI1_BASE + (((i)>1) ? (((i)* 0x1000) + 0x20000) : (((~(i)) & 1)* 0x1000 )))

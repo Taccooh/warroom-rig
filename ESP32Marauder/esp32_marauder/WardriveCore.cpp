@@ -1003,10 +1003,15 @@ void WardriveCore::drawCoreModeFrame() {
                                WARDRIVE_CORE_CHANNEL,
                                use_encryption ? "ON" : "OFF");
 
-        // Footer.
-        display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-        display_obj.tft.setCursor(4, 300);
-        display_obj.tft.print("[CENTER long-press to exit]");
+        // Footer. On touch boards (V8) the bottom band holds the on-screen
+        // session buttons instead of a keypress hint.
+        #ifdef HAS_TOUCH
+            this->drawTouchControls();
+        #else
+            display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+            display_obj.tft.setCursor(4, 300);
+            display_obj.tft.print("[CENTER long-press to exit]");
+        #endif
     #endif
 }
 
@@ -1031,14 +1036,23 @@ void WardriveCore::refreshCoreDisplay() {
         display_obj.tft.setTextSize(1);
 
         // Session-State-Zeile: Lobby (gelb) vs. Live/Collecting (gruen).
+        // On touch boards the session menu is the on-screen button bar, so the
+        // "[R: Session menu]" keypress hint is dropped.
+        #ifdef HAS_TOUCH
+            const char* live_hint  = "STATE: LIVE                  ";
+            const char* lobby_hint = "STATE: LOBBY                 ";
+        #else
+            const char* live_hint  = "STATE: LIVE    [R: Session menu] ";
+            const char* lobby_hint = "STATE: LOBBY   [R: Session menu] ";
+        #endif
         if (collecting) {
             display_obj.tft.setTextColor(TFT_GREEN, TFT_BLACK);
             display_obj.tft.setCursor(x0, 64);
-            display_obj.tft.print("STATE: LIVE    [R: Session menu] ");
+            display_obj.tft.print(live_hint);
         } else {
             display_obj.tft.setTextColor(TFT_YELLOW, TFT_BLACK);
             display_obj.tft.setCursor(x0, 64);
-            display_obj.tft.print("STATE: LOBBY   [R: Session menu] ");
+            display_obj.tft.print(lobby_hint);
         }
 
         char buf[64];
@@ -1117,6 +1131,9 @@ void WardriveCore::refreshCoreDisplay() {
 
         // Per-slot channel assignments. Compact one-liner so it fits on the
         // existing layout without scrolling: e.g. "Slots: 1=ch1-7 2=ch8-14".
+        // On touch boards (V8) this bottom band is reused for the session button
+        // bar (drawTouchControls), so the slots telemetry is dropped there.
+        #ifndef HAS_TOUCH
         display_obj.tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
         display_obj.tft.setCursor(x0, 276);
         char slots[64];
@@ -1139,7 +1156,83 @@ void WardriveCore::refreshCoreDisplay() {
         }
         padTo(slots, sizeof(slots), 40);
         display_obj.tft.print(slots);
+        #endif // !HAS_TOUCH
     #endif
 }
+
+#ifdef HAS_TOUCH
+// ============================================================
+// Touch session controls (Marauder V8)
+// ============================================================
+//
+// Geometry of the on-screen button bar. It occupies the bottom band that the
+// "Slots:" telemetry line uses on button boards (suppressed under HAS_TOUCH in
+// refreshCoreDisplay). Two states:
+//   LOBBY -> [   START   ] [EXIT]
+//   LIVE  -> [SYNC][STOP] [EXIT]
+static const int TC_BAR_Y    = 274;   // button bar top
+static const int TC_BAR_H    = 40;    // button height (274..314)
+static const int TC_EXIT_X   = 182;   // Exit: 182..234
+static const int TC_EXIT_W   = 52;
+static const int TC_START_X  = 6;     // Lobby Start: 6..176 (wide)
+static const int TC_START_W  = 170;
+static const int TC_SYNC_X   = 6;     // Live Re-Sync: 6..88
+static const int TC_SYNC_W   = 82;
+static const int TC_STOP_X   = 92;    // Live Stop: 92..176
+static const int TC_STOP_W   = 84;
+
+static void tcDrawButton(int x, int y, int w, int h, const char* label,
+                         uint16_t fill, uint16_t border) {
+    display_obj.tft.fillRoundRect(x, y, w, h, 5, fill);
+    display_obj.tft.drawRoundRect(x, y, w, h, 5, border);
+    display_obj.tft.setTextSize(2);
+    display_obj.tft.setTextColor(border, fill);
+    int tw = (int)strlen(label) * 12;               // 6px glyph * size 2
+    int tx = x + (w - tw) / 2; if (tx < x + 3) tx = x + 3;
+    int ty = y + (h - 16) / 2;                       // 8px glyph * size 2
+    display_obj.tft.setCursor(tx, ty);
+    display_obj.tft.print(label);
+}
+
+void WardriveCore::drawTouchControls() {
+    #ifdef HAS_SCREEN
+        // Clear the whole band first so a Live<->Lobby switch leaves no stale glyphs.
+        display_obj.tft.fillRect(0, TC_BAR_Y - 2, TFT_WIDTH, TC_BAR_H + 6, TFT_BLACK);
+        tcDrawButton(TC_EXIT_X, TC_BAR_Y, TC_EXIT_W, TC_BAR_H, "EXIT",
+                     TFT_DARKGREY, TFT_WHITE);
+        if (collecting) {
+            tcDrawButton(TC_SYNC_X, TC_BAR_Y, TC_SYNC_W, TC_BAR_H, "SYNC",
+                         TFT_NAVY, TFT_CYAN);
+            tcDrawButton(TC_STOP_X, TC_BAR_Y, TC_STOP_W, TC_BAR_H, "STOP",
+                         TFT_MAROON, TFT_RED);
+        } else {
+            tcDrawButton(TC_START_X, TC_BAR_Y, TC_START_W, TC_BAR_H, "START",
+                         TFT_DARKGREEN, TFT_GREEN);
+        }
+    #endif
+}
+
+bool WardriveCore::handleTouch(uint16_t x, uint16_t y) {
+    // Only taps inside the button band count; anything else is ignored (returns
+    // false, tap consumed by caller without exiting).
+    if ((int)y < TC_BAR_Y - 4 || (int)y > TC_BAR_Y + TC_BAR_H + 4) return false;
+
+    #define TC_IN_X(bx, bw) ((int)x >= (bx) && (int)x <= (bx) + (bw))
+    if (TC_IN_X(TC_EXIT_X, TC_EXIT_W)) return true;   // caller stops the scan
+
+    if (collecting) {
+        if      (TC_IN_X(TC_SYNC_X, TC_SYNC_W)) resyncSession();
+        else if (TC_IN_X(TC_STOP_X, TC_STOP_W)) stopSession();
+    } else {
+        if      (TC_IN_X(TC_START_X, TC_START_W)) startSession();
+    }
+    #undef TC_IN_X
+
+    // Session state may have flipped -> redraw the button set. The STATE line
+    // updates on the next refreshCoreDisplay tick (<=500ms).
+    drawTouchControls();
+    return false;
+}
+#endif // HAS_TOUCH
 
 #endif // MARAUDER_CORE_MODE
