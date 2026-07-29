@@ -300,6 +300,25 @@ void MenuFunctions::main(uint32_t currentTime)
     }
   #endif
 
+  // warroom-rig home console on touch boards (no nav buttons, e.g. Marauder V8):
+  // the three action cards + Tools strip are tapped directly. The portrait
+  // 240x320 layout is identical to V7 -- only the input differs -- so this is
+  // gated to HAS_TOUCH and V7 (buttons) stays byte-for-byte unchanged.
+  #ifdef HAS_TOUCH
+    if (pressed && (current_menu == &mainMenu) &&
+        (wifi_scan_obj.currentScanMode == WIFI_SCAN_OFF)) {
+      int rh_idx = this->rigHomeHitTest(t_x, t_y);
+      if ((rh_idx >= 0) && (rh_idx < (int)current_menu->list->size())) {
+        uint16_t rx, ry;
+        while (display_obj.updateTouch(&rx, &ry)) delay(5);   // consume the touch
+        current_menu->selected = rh_idx;
+        this->drawRigHome(rh_idx);                            // flash the tapped card
+        current_menu->list->get(rh_idx).callable();
+        return;
+      }
+    }
+  #endif
+
   // This is if there are scans/attacks going on
   #ifdef HAS_ILI9341
     if ((wifi_scan_obj.currentScanMode != WIFI_SCAN_OFF) &&
@@ -3823,6 +3842,24 @@ void MenuFunctions::drawRigHome(int only)
 
   tft.setTextDatum(TL_DATUM);  // restore library default
 }
+
+#ifdef HAS_TOUCH
+// Hit-test a touch coordinate against the home-console layout. Mirrors the
+// geometry in drawRigHome(): three action cards (index 0..2) then the full-width
+// Tools strip (index 3). Returns the mainMenu node index, or -1 if the tap missed.
+int MenuFunctions::rigHomeHitTest(uint16_t x, uint16_t y)
+{
+  const int cx = 8, cw = TFT_WIDTH - 16, chh = 68, y0 = 46, pitch = 78;
+  for (int i = 0; i < 3; i++) {
+    int cy = y0 + i * pitch;
+    if ((int)x >= cx && (int)x <= cx + cw && (int)y >= cy && (int)y <= cy + chh)
+      return i;
+  }
+  if ((int)y >= 294)          // Tools strip spans the full width to the bottom edge
+    return 3;
+  return -1;
+}
+#endif
 
 void MenuFunctions::displayCurrentMenu(int start_index)
 {

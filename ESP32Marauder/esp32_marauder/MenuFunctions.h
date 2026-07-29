@@ -203,6 +203,9 @@ class MenuFunctions
     void displayMenuButtons();
     void drawRigHome(int only = -1);   // warroom-rig home console; only>=0 repaints just one element (flicker-free nav)
     void drawRigHeader(bool full);     // warroom-rig home header: mascot/wordmark (full) + honest live GPS/SD line
+    #ifdef HAS_TOUCH
+      int rigHomeHitTest(uint16_t x, uint16_t y);  // map a tap to a home-console card index (touch boards, e.g. V8); -1 if missed
+    #endif
     uint16_t getColor(uint16_t color);
     void drawAvgLine(int16_t value);
     void drawMaxLine(int16_t value, uint16_t color);
