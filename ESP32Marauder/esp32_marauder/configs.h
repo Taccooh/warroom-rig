@@ -3134,9 +3134,12 @@
   // ============================================================
   #ifdef MARAUDER_CORE_MODE
     #define WARDRIVE_CORE_CHANNEL            6
-    #define WARDRIVE_CORE_MAX_NODES          8
+    // 12 nodes plaintext; with encryption the real ceiling is 6 encrypted
+    // ESP-NOW peers (see the note in WardriveCore.h).
+    #define WARDRIVE_CORE_MAX_NODES          12
     #define WARDRIVE_CORE_QUEUE_LEN          12
     #define WARDRIVE_CORE_DISPLAY_REFRESH_MS 500
+    #define WARDRIVE_CORE_RATE_WINDOW_MS     15000   // lines/min sampling window
     #define WARDRIVE_CORE_NODE_TIMEOUT_MS    60000
     #define WARDRIVE_CORE_HEAP_MIN_INIT      30000
     #define WARDRIVE_CORE_HEAP_MIN_RUNTIME   15000

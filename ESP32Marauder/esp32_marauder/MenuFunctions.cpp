@@ -186,6 +186,13 @@ void MenuFunctions::main(uint32_t currentTime)
         // still &mainMenu, so also require WIFI_SCAN_OFF or we'd paint over it.
         if (current_menu == &mainMenu && wifi_scan_obj.currentScanMode == WIFI_SCAN_OFF)
           this->drawRigHeader(false);
+        #ifdef MARAUDER_CORE_MODE
+        // Rig Mode draws its own bronze header (wordmark + satellites + battery)
+        // as part of refreshCoreDisplay -- the Marauder status bar would paint
+        // over it every BANNER_TIME.
+        else if (wifi_scan_obj.currentScanMode == WIFI_SCAN_WAR_DRIVE_CORE)
+          ;   // owned by WardriveCore
+        #endif
         else
           this->updateStatusBar();
       }

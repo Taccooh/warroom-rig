@@ -33,12 +33,20 @@
 #endif
 #ifndef WARDRIVE_CORE_MAX_NODES
   // Defensiver Default nur falls configs.h ihn NICHT setzt. configs.h definiert
-  // unter MARAUDER_CORE_MODE bereits 8 (das gewinnt). 8 gilt fuer PLAINTEXT;
-  // mit Verschluesselung max. 6 (ESP-NOW-Encrypted-Peer-Limit).
-  #define WARDRIVE_CORE_MAX_NODES 8
+  // unter MARAUDER_CORE_MODE bereits 12 (das gewinnt).
+  //
+  // ACHTUNG — 12 gilt fuer PLAINTEXT. Mit Verschluesselung bleibt die reale
+  // Grenze bei 6: sendAdminToNodeSlot() stellt pro registriertem Node einen
+  // DAUERHAFTEN encrypted Peer wieder her, und ESP-NOW erlaubt nur 6 davon
+  // gleichzeitig (ESP_NOW_MAX_ENCRYPT_PEER_NUM). Node 7+ registriert sich zwar,
+  // sein encrypted esp_now_add_peer schlaegt aber fehl. Stack-Limit, nicht unseres.
+  #define WARDRIVE_CORE_MAX_NODES 12
 #endif
 #ifndef WARDRIVE_CORE_QUEUE_LEN
   #define WARDRIVE_CORE_QUEUE_LEN 12
+#endif
+#ifndef WARDRIVE_CORE_RATE_WINDOW_MS
+  #define WARDRIVE_CORE_RATE_WINDOW_MS 15000
 #endif
 #ifndef WARDRIVE_CORE_DISPLAY_REFRESH_MS
   #define WARDRIVE_CORE_DISPLAY_REFRESH_MS 500
@@ -77,8 +85,11 @@ struct NodeRecord {
     uint8_t  start_channel_idx;         // 1
     uint8_t  end_channel_idx;           // 1
     uint8_t  last_admin_version_sent;   // 1
-    uint16_t rx_text_count;             // 2 — pro-Node-Stats
+    uint16_t rx_text_count;             // 2 — pro-Node-Stats (== akzeptierte Wigle-Lines)
     uint16_t rx_bad_count;              // 2
+    int8_t   last_rssi;                 // 1 — RSSI des letzten Pakets dieser Node (Display)
+    uint16_t rate_prev_lines;           // 2 — rx_text_count beim letzten Raten-Fenster
+    uint8_t  rate_per_min;              // 1 — Lines/min, aus dem Fenster hochgerechnet
     // Padding auf naechste 4-byte-Grenze.
 };
 
@@ -171,6 +182,8 @@ private:
     // ---- Display ----
     void drawCoreModeFrame();            // Init-Once-Layout
     void refreshCoreDisplay();           // Periodic-Refresh
+    void drawRigBar();                   // bronze header: wordmark + satellites + battery
+    void updateRates(uint32_t now);      // roll the lines/min counters
     #ifdef HAS_TOUCH
     void drawTouchControls();            // on-screen Start/Stop/Re-Sync/Exit bar (V8)
     #endif
@@ -207,6 +220,19 @@ private:
     int      last_rx_node_idx;
     uint32_t last_rx_ms;
     int8_t   last_rx_rssi;
+
+    // Rolling throughput. Every WARDRIVE_CORE_RATE_WINDOW_MS the deltas since the
+    // last window are scaled to lines/min (global + per node) for the display.
+    uint32_t rate_window_ms;
+    uint32_t rate_prev_total;
+    uint16_t rate_lines_per_min;
+
+    // Node-table render cache. Row chrome (zebra panel, status stripe, node id)
+    // is only repainted when a row's identity changes — redrawing it on every
+    // 500 ms refresh would visibly flicker.
+    uint8_t  drawn_row_count;
+    uint8_t  drawn_pitch;
+    uint16_t drawn_sig[WARDRIVE_CORE_MAX_NODES];
 
     // Periodic-Tick-Tracking.
     uint32_t session_start_ms;

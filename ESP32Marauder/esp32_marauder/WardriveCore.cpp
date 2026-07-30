@@ -32,6 +32,7 @@
 
 #ifdef HAS_SCREEN
   #include "Display.h"
+  #include "BatteryInterface.h"   // battery percentage in the cluster header
 #endif
 
 #include "settings.h"
@@ -47,6 +48,7 @@ extern Buffer   buffer_obj;
 #endif
 #ifdef HAS_SCREEN
   extern Display display_obj;
+  extern BatteryInterface battery_obj;
 #endif
 extern Settings settings_obj;
 
@@ -91,6 +93,12 @@ WardriveCore::WardriveCore() {
     last_rx_node_idx = -1;
     last_rx_ms = 0;
     last_rx_rssi = 0;
+    rate_window_ms = 0;
+    rate_prev_total = 0;
+    rate_lines_per_min = 0;
+    drawn_row_count = 0xFF;   // forces a full node-table repaint
+    drawn_pitch = 0;
+    memset(drawn_sig, 0xFF, sizeof(drawn_sig));
     session_start_ms = 0;
     last_display_refresh_ms = 0;
     last_stale_check_ms = 0;
@@ -610,6 +618,39 @@ void WardriveCore::updateLastRx(int slot, int8_t rssi) {
     last_rx_node_idx = slot;
     last_rx_ms = millis();
     last_rx_rssi = rssi;
+    // Keep it per node too — the display shows a signal bar per row, not just
+    // for whoever transmitted last.
+    if (slot >= 0 && slot < WARDRIVE_CORE_MAX_NODES)
+        node_table[slot].last_rssi = rssi;
+}
+
+// Roll the lines/min counters. Called from runTick; scales the delta since the
+// last window up to a per-minute figure (window is 15 s by default).
+void WardriveCore::updateRates(uint32_t now) {
+    if (rate_window_ms == 0) {            // first call — establish the baseline
+        rate_window_ms = now;
+        rate_prev_total = total_rx_lines;
+        for (uint8_t i = 0; i < WARDRIVE_CORE_MAX_NODES; i++)
+            node_table[i].rate_prev_lines = node_table[i].rx_text_count;
+        return;
+    }
+    uint32_t elapsed = now - rate_window_ms;
+    if (elapsed < WARDRIVE_CORE_RATE_WINDOW_MS) return;
+
+    const uint32_t scale = 60000UL / (elapsed ? elapsed : 1);
+    uint32_t d = total_rx_lines - rate_prev_total;
+    uint32_t per_min = d * scale;
+    rate_lines_per_min = (per_min > 0xFFFF) ? 0xFFFF : (uint16_t)per_min;
+    rate_prev_total = total_rx_lines;
+
+    for (uint8_t i = 0; i < WARDRIVE_CORE_MAX_NODES; i++) {
+        uint16_t cur = node_table[i].rx_text_count;
+        uint16_t dn  = cur - node_table[i].rate_prev_lines;   // wraps safely
+        uint32_t pm  = (uint32_t)dn * scale;
+        node_table[i].rate_per_min = (pm > 255) ? 255 : (uint8_t)pm;
+        node_table[i].rate_prev_lines = cur;
+    }
+    rate_window_ms = now;
 }
 
 // ============================================================
@@ -709,6 +750,12 @@ void WardriveCore::init() {
     last_rx_node_idx = -1;
     last_rx_ms = 0;
     last_rx_rssi = 0;
+    rate_window_ms = 0;
+    rate_prev_total = 0;
+    rate_lines_per_min = 0;
+    drawn_row_count = 0xFF;   // forces a full node-table repaint
+    drawn_pitch = 0;
+    memset(drawn_sig, 0xFF, sizeof(drawn_sig));
     assignment_version = 1;
     session_start_ms = millis();
     last_display_refresh_ms = 0;
@@ -945,7 +992,9 @@ void WardriveCore::runTick(uint32_t currentTime) {
         }
     #endif
 
-    // 5) Periodischer Display-Refresh.
+    // 5) Periodischer Display-Refresh (Raten vorher rollen, damit die Anzeige
+    //    frische lines/min sieht).
+    updateRates(currentTime);
     if (currentTime - last_display_refresh_ms > WARDRIVE_CORE_DISPLAY_REFRESH_MS) {
         last_display_refresh_ms = currentTime;
         refreshCoreDisplay();
@@ -988,175 +1037,254 @@ void WardriveCore::runTick(uint32_t currentTime) {
 // Display
 // ============================================================
 
+// ============================================================
+// Display — warroom-rig cluster view
+// ============================================================
+//
+// Continues the home console's visual language (bronze header bar, clan gold,
+// dark panels) instead of a flat text dump: a hero tile carries the two numbers
+// that matter (WiFi / BLE), each node gets a panel row with a status stripe and
+// a signal-bar RSSI. Row density adapts: roomy for a small fleet, compact once
+// more than six nodes are registered (up to WARDRIVE_CORE_MAX_NODES).
+
+static const uint16_t WC_GOLD   = 0xEDA9;  // clan gold
+static const uint16_t WC_INK    = 0xEF3B;  // warm off-white
+static const uint16_t WC_DIM    = 0x8C0E;  // muted label
+static const uint16_t WC_DIM2   = 0x5AC9;  // faint hint
+static const uint16_t WC_PANEL  = 0x1081;  // panel fill
+static const uint16_t WC_PANEL3 = 0x2902;  // panel outline
+static const uint16_t WC_GREEN  = 0x6E6D;
+static const uint16_t WC_AMBER  = 0xFD20;
+
+// Layout, 240x320 portrait.
+static const int WC_HERO_Y   = 25;
+static const int WC_HERO_H   = 48;
+static const int WC_ROWS_Y   = 92;
+static const int WC_ROWS_END = 272;   // rows must stop before the touch bar (274)
+
+// Column origins, shared by the header labels and the rows so they can't drift.
+static const int WC_X_NODE = 12, WC_X_SLICE = 58, WC_X_LINES = 128;
+static const int WC_X_RATE = 168, WC_X_SIG = 200, WC_X_RSSI = 218;
+
+// Compact number so a column can never overflow into its neighbour.
+static void wcFmt(char* out, size_t n, uint32_t v) {
+    if (v < 10000) snprintf(out, n, "%lu", (unsigned long)v);
+    else           snprintf(out, n, "%luk", (unsigned long)(v / 1000));
+}
+
+// Four rising signal bars, lit according to RSSI. 0 = never heard -> all dim.
+static void wcBars(int x, int y, int8_t rssi, uint16_t col, uint16_t bg) {
+    int lvl = 0;
+    if (rssi != 0) {
+        if      (rssi >= -55) lvl = 4;
+        else if (rssi >= -68) lvl = 3;
+        else if (rssi >= -78) lvl = 2;
+        else                  lvl = 1;
+    }
+    display_obj.tft.fillRect(x, y, 15, 10, bg);
+    for (int i = 0; i < 4; i++) {
+        int bh = 3 + i * 2;
+        display_obj.tft.fillRect(x + i * 4, y + 10 - bh, 3, bh, (i < lvl) ? col : WC_DIM2);
+    }
+}
+
+// Dynamic part of the bronze header: satellites + battery. The wordmark itself
+// is static and painted once by drawCoreModeFrame.
+void WardriveCore::drawRigBar() {
+    #ifdef HAS_SCREEN
+        auto &tft = display_obj.tft;
+        tft.setTextSize(1);
+
+        bool mod = false, fix = false; uint8_t sats = 0;
+        #ifdef HAS_GPS
+            mod  = gps_obj.getGpsModuleStatus();
+            fix  = gps_obj.getFixStatus();
+            sats = gps_obj.getNumSats();
+        #endif
+        // Honest GPS: module presence is NOT a fix.
+        uint16_t scol = (!mod) ? WC_DIM2 : (fix ? WC_GREEN : WC_AMBER);
+        char sb[16];
+        if      (!mod) snprintf(sb, sizeof(sb), "NO GPS");
+        else if (fix)  snprintf(sb, sizeof(sb), "FIX %-2u", (unsigned)sats);
+        else           snprintf(sb, sizeof(sb), "ACQ %-2u", (unsigned)sats);
+        tft.setTextColor(scol, STATUSBAR_COLOR);
+        tft.setCursor(132, 7);
+        tft.print(sb);
+
+        uint8_t bl = battery_obj.battery_level;
+        uint16_t bcol = (bl >= 40) ? WC_GREEN : ((bl >= 20) ? WC_AMBER : TFT_RED);
+        char bb[8];
+        snprintf(bb, sizeof(bb), "%3u%%", (unsigned)bl);
+        tft.setTextColor(bcol, STATUSBAR_COLOR);
+        tft.setCursor(204, 7);
+        tft.print(bb);
+    #endif
+}
+
 void WardriveCore::drawCoreModeFrame() {
     #ifdef HAS_SCREEN
+        auto &tft = display_obj.tft;
         display_obj.clearScreen();
-        display_obj.tft.setTextColor(TFT_CYAN, TFT_BLACK);
-        display_obj.tft.setTextSize(2);
-        display_obj.tft.setCursor(4, 28);
-        display_obj.tft.print("Wardrive Core");
 
-        display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        display_obj.tft.setTextSize(1);
-        display_obj.tft.setCursor(4, 50);
-        display_obj.tft.printf("Channel %d  ENC: %s",
-                               WARDRIVE_CORE_CHANNEL,
-                               use_encryption ? "ON" : "OFF");
+        // Bronze header + wordmark (static; sats/battery are refreshed).
+        tft.fillRect(0, 0, TFT_WIDTH, 22, STATUSBAR_COLOR);
+        tft.setTextSize(1);
+        tft.setTextColor(WC_INK, STATUSBAR_COLOR);
+        tft.setCursor(6, 7);
+        tft.print("WARROOM RIG");
 
-        // Footer. On touch boards (V8) the bottom band holds the on-screen
-        // session buttons instead of a keypress hint.
+        // Hero tile with a gold spine + the static metric labels.
+        tft.fillRoundRect(4, WC_HERO_Y, TFT_WIDTH - 8, WC_HERO_H, 4, WC_PANEL);
+        tft.drawRoundRect(4, WC_HERO_Y, TFT_WIDTH - 8, WC_HERO_H, 4, WC_PANEL3);
+        tft.fillRect(4, WC_HERO_Y + 2, 3, WC_HERO_H - 4, WC_GOLD);
+        tft.setTextColor(WC_DIM, WC_PANEL);
+        tft.setCursor(14, WC_HERO_Y + 4);  tft.print("WIFI");
+        tft.setCursor(96, WC_HERO_Y + 4);  tft.print("BLE");
+        tft.setCursor(166, WC_HERO_Y + 4); tft.print("LINES");
+
+        // Column header for the node table.
+        tft.setTextColor(WC_DIM2, TFT_BLACK);
+        tft.setCursor(10,         78); tft.print("NODE");
+        tft.setCursor(WC_X_SLICE, 78); tft.print("SLICE");
+        tft.setCursor(WC_X_LINES, 78); tft.print("LINES");
+        tft.setCursor(WC_X_RATE,  78); tft.print("RATE");
+        tft.setCursor(WC_X_SIG+2, 78); tft.print("SIG");
+        tft.drawFastHLine(4, 88, TFT_WIDTH - 8, WC_PANEL3);
+
+        drawn_row_count = 0xFF;   // force a full row repaint on the next refresh
+
         #ifdef HAS_TOUCH
             this->drawTouchControls();
         #else
-            display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-            display_obj.tft.setCursor(4, 300);
-            display_obj.tft.print("[CENTER long-press to exit]");
+            tft.setTextColor(WC_DIM2, TFT_BLACK);
+            tft.setCursor(6, 306);
+            tft.print("R: session   C hold: exit");
         #endif
     #endif
 }
 
-// Pad `s` with trailing spaces up to `width` so the next refresh's writeover
-// of a shorter value cleanly overwrites the stale tail. Used by the stats
-// refresh loop below, which avoids the previous fillRect-then-redraw
-// strategy because that caused a visible black flash at 2 Hz.
-static void padTo(char* buf, size_t buf_size, size_t width) {
-    size_t len = strnlen(buf, buf_size);
-    while (len + 1 < buf_size && len < width) buf[len++] = ' ';
-    buf[len < buf_size ? len : buf_size - 1] = '\0';
-}
-
 void WardriveCore::refreshCoreDisplay() {
     #ifdef HAS_SCREEN
-        // No-clear refresh: setTextColor(fg, bg) repaints the background under
-        // each glyph, so writing a new line on top of the old one is enough
-        // to overwrite — no fillRect needed. Trailing-space padding handles
-        // cases where the new value is shorter than the previous one.
-        // Y-Koordinaten gem. integration_design.md Sektion 5 Wireframe.
-        const int x0 = 4;
-        display_obj.tft.setTextSize(1);
+        auto &tft = display_obj.tft;
+        char buf[24];
 
-        // Session-State-Zeile: Lobby (gelb) vs. Live/Collecting (gruen).
-        // On touch boards the session menu is the on-screen button bar, so the
-        // "[R: Session menu]" keypress hint is dropped.
-        #ifdef HAS_TOUCH
-            const char* live_hint  = "STATE: LIVE                  ";
-            const char* lobby_hint = "STATE: LOBBY                 ";
-        #else
-            const char* live_hint  = "STATE: LIVE    [R: Session menu] ";
-            const char* lobby_hint = "STATE: LOBBY   [R: Session menu] ";
-        #endif
-        if (collecting) {
-            display_obj.tft.setTextColor(TFT_GREEN, TFT_BLACK);
-            display_obj.tft.setCursor(x0, 64);
-            display_obj.tft.print(live_hint);
-        } else {
-            display_obj.tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-            display_obj.tft.setCursor(x0, 64);
-            display_obj.tft.print(lobby_hint);
+        drawRigBar();
+
+        // ---- hero: WiFi / BLE are the headline pair, lines the third value ----
+        tft.setTextSize(3);
+        tft.setTextColor(collecting ? WC_GOLD : WC_DIM2, WC_PANEL);
+        wcFmt(buf, sizeof(buf), total_rx_wifi);
+        tft.setCursor(14, WC_HERO_Y + 12); tft.printf("%-4s", buf);
+        wcFmt(buf, sizeof(buf), total_rx_ble);
+        tft.setCursor(96, WC_HERO_Y + 12); tft.printf("%-3s", buf);
+
+        tft.setTextSize(2);
+        tft.setTextColor(collecting ? WC_INK : WC_DIM2, WC_PANEL);
+        wcFmt(buf, sizeof(buf), total_rx_lines);
+        tft.setCursor(166, WC_HERO_Y + 16); tft.printf("%-4s", buf);
+
+        // Status strip along the bottom of the hero tile.
+        tft.setTextSize(1);
+        tft.setTextColor(collecting ? WC_GREEN : WC_AMBER, WC_PANEL);
+        tft.setCursor(14, WC_HERO_Y + 37);
+        tft.print(collecting ? "LIVE " : "LOBBY");
+        tft.setTextColor(WC_DIM, WC_PANEL);
+        tft.setCursor(52, WC_HERO_Y + 37);
+        if (collecting) snprintf(buf, sizeof(buf), "%u/min   ", (unsigned)rate_lines_per_min);
+        else            snprintf(buf, sizeof(buf), "idle     ");
+        tft.print(buf);
+        tft.setCursor(116, WC_HERO_Y + 37);
+        snprintf(buf, sizeof(buf), "n %u/%u  ch %u   ",
+                 (unsigned)getActiveNodeCount(),
+                 (unsigned)WARDRIVE_CORE_MAX_NODES,
+                 (unsigned)WARDRIVE_CORE_CHANNEL);
+        tft.print(buf);
+
+        // ---- node rows ----
+        // Compact the active slots so the table shows no gaps after a dropout.
+        uint8_t slots[WARDRIVE_CORE_MAX_NODES];
+        uint8_t n = 0;
+        for (uint8_t i = 0; i < WARDRIVE_CORE_MAX_NODES; i++)
+            if (node_table[i].flags & NODE_FLAG_ACTIVE) slots[n++] = i;
+
+        const int pitch = (n <= 6) ? 24 : 15;
+        const int rh    = pitch - 3;
+
+        // Relayout only when the fleet size (and thus the density) changes.
+        if (n != drawn_row_count || pitch != drawn_pitch) {
+            tft.fillRect(0, WC_ROWS_Y, TFT_WIDTH, WC_ROWS_END - WC_ROWS_Y, TFT_BLACK);
+            drawn_row_count = n;
+            drawn_pitch     = pitch;
+            for (uint8_t k = 0; k < WARDRIVE_CORE_MAX_NODES; k++) drawn_sig[k] = 0xFFFF;
+            if (n == 0) {
+                tft.setTextSize(1);
+                tft.setTextColor(WC_DIM2, TFT_BLACK);
+                tft.setCursor(12, WC_ROWS_Y + 6);
+                tft.print("waiting for nodes...");
+            }
         }
 
-        char buf[64];
-        // GPS-Status.
-        bool gps_fix = false;
-        #ifdef HAS_GPS
-            gps_fix = gps_obj.getFixStatus();
-        #endif
-        display_obj.tft.setTextColor(gps_fix ? TFT_GREEN : TFT_YELLOW, TFT_BLACK);
-        display_obj.tft.setCursor(x0, 80);
-        snprintf(buf, sizeof(buf), "GPS: %s", gps_fix ? "OK" : "searching...");
-        padTo(buf, sizeof(buf), 24);
-        display_obj.tft.print(buf);
+        for (uint8_t k = 0; k < n; k++) {
+            NodeRecord &nr = node_table[slots[k]];
+            const int y  = WC_ROWS_Y + k * pitch;
+            const int ty = y + (rh - 8) / 2;
+            // Amber once a node is more than half its timeout quiet.
+            const bool stale = ((millis() - nr.last_seen_ms) > (WARDRIVE_CORE_NODE_TIMEOUT_MS / 2));
+            const uint16_t col   = stale ? WC_AMBER : WC_GREEN;
+            const uint16_t rowbg = (k % 2 == 0) ? WC_PANEL : TFT_BLACK;
 
-        display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        display_obj.tft.setCursor(x0, 100);
-        snprintf(buf, sizeof(buf), "Nodes:    %u / %u",
-                 getActiveNodeCount(), (unsigned)WARDRIVE_CORE_MAX_NODES);
-        padTo(buf, sizeof(buf), 24);
-        display_obj.tft.print(buf);
+            // Row chrome (zebra panel, status stripe, node id) only when the row's
+            // identity changes — repainting it every 500 ms would flicker.
+            const uint16_t sig = (uint16_t)(nr.mac_suffix ^ (stale ? 0x8000 : 0x0000));
+            if (drawn_sig[k] != sig) {
+                drawn_sig[k] = sig;
+                if (rowbg != TFT_BLACK) tft.fillRoundRect(4, y, TFT_WIDTH - 8, rh, 3, rowbg);
+                else                    tft.fillRect(4, y, TFT_WIDTH - 8, rh, TFT_BLACK);
+                tft.fillRect(4, y, 3, rh, col);
+                tft.setTextSize(1);
+                tft.setTextColor(WC_INK, rowbg);
+                tft.setCursor(WC_X_NODE, ty);
+                tft.printf("%04X", nr.mac_suffix);
+            }
 
-        display_obj.tft.setCursor(x0, 120);
-        snprintf(buf, sizeof(buf), "Lines:    %lu", (unsigned long)total_rx_lines);
-        padTo(buf, sizeof(buf), 24);
-        display_obj.tft.print(buf);
+            tft.setTextSize(1);
 
-        display_obj.tft.setCursor(x0, 140);
-        snprintf(buf, sizeof(buf), "WiFi: %lu  BLE: %lu",
-                 (unsigned long)total_rx_wifi, (unsigned long)total_rx_ble);
-        padTo(buf, sizeof(buf), 24);
-        display_obj.tft.print(buf);
+            // Assigned channel slice, in gold.
+            tft.setTextColor(WC_GOLD, rowbg);
+            tft.setCursor(WC_X_SLICE, ty);
+            if (nr.start_channel_idx < NUM_SCAN_CHANNELS &&
+                nr.end_channel_idx   < NUM_SCAN_CHANNELS)
+                snprintf(buf, sizeof(buf), "%u-%-6u",
+                         (unsigned)scan_channels[nr.start_channel_idx],
+                         (unsigned)scan_channels[nr.end_channel_idx]);
+            else
+                snprintf(buf, sizeof(buf), "%-9s", "-");
+            tft.print(buf);
 
-        display_obj.tft.setCursor(x0, 160);
-        snprintf(buf, sizeof(buf), "Bad: %lu  Drops: %lu",
-                 (unsigned long)total_rx_bad, (unsigned long)total_rx_drops);
-        padTo(buf, sizeof(buf), 24);
-        display_obj.tft.print(buf);
+            // Wigle lines contributed by this node.
+            tft.setTextColor(WC_INK, rowbg);
+            tft.setCursor(WC_X_LINES, ty);
+            wcFmt(buf, sizeof(buf), nr.rx_text_count);
+            tft.printf("%-5s", buf);
 
-        // File / SD / Time block.
-        #ifdef HAS_SD
-            display_obj.tft.setCursor(x0, 196);
-            snprintf(buf, sizeof(buf), "File: %s",
-                     buffer_obj.getFileName().c_str());
-            padTo(buf, sizeof(buf), 36);
-            display_obj.tft.print(buf);
-        #endif
+            // Rolling throughput.
+            if (nr.rate_per_min) {
+                tft.setTextColor(WC_GREEN, rowbg);
+                snprintf(buf, sizeof(buf), "%u/m ", (unsigned)nr.rate_per_min);
+            } else {
+                tft.setTextColor(WC_DIM2, rowbg);
+                snprintf(buf, sizeof(buf), "-    ");
+            }
+            tft.setCursor(WC_X_RATE, ty);
+            tft.print(buf);
 
-        // Session uptime HH:MM:SS.
-        uint32_t uptime_s = (millis() - session_start_ms) / 1000;
-        uint32_t hh = uptime_s / 3600;
-        uint32_t mm = (uptime_s / 60) % 60;
-        uint32_t ss = uptime_s % 60;
-        display_obj.tft.setCursor(x0, 236);
-        snprintf(buf, sizeof(buf), "Time: %02u:%02u:%02u", hh, mm, ss);
-        padTo(buf, sizeof(buf), 24);
-        display_obj.tft.print(buf);
-
-        // Last node info.
-        display_obj.tft.setCursor(x0, 256);
-        if (last_rx_node_idx >= 0 && last_rx_node_idx < WARDRIVE_CORE_MAX_NODES &&
-            (node_table[last_rx_node_idx].flags & NODE_FLAG_ACTIVE)) {
-            display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            uint16_t suffix = node_table[last_rx_node_idx].mac_suffix;
-            uint32_t age_s = (millis() - last_rx_ms) / 1000;
-            snprintf(buf, sizeof(buf), "Last: %02X:%02X  %lus  RSSI %d",
-                     (suffix >> 8) & 0xFF, suffix & 0xFF,
-                     (unsigned long)age_s, (int)last_rx_rssi);
-            padTo(buf, sizeof(buf), 36);
-            display_obj.tft.print(buf);
-        } else {
-            display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-            snprintf(buf, sizeof(buf), "Waiting for nodes...");
-            padTo(buf, sizeof(buf), 36);
-            display_obj.tft.print(buf);
+            // Link quality: bars + the raw value.
+            wcBars(WC_X_SIG, y + (rh - 10) / 2, nr.last_rssi, col, rowbg);
+            tft.setTextColor(WC_DIM, rowbg);
+            tft.setCursor(WC_X_RSSI, ty);
+            if (nr.last_rssi) tft.printf("%-3d", (int)nr.last_rssi);
+            else              tft.print("   ");
         }
-
-        // Per-slot channel assignments. Compact one-liner so it fits on the
-        // existing layout without scrolling: e.g. "Slots: 1=ch1-7 2=ch8-14".
-        // On touch boards (V8) this bottom band is reused for the session button
-        // bar (drawTouchControls), so the slots telemetry is dropped there.
-        #ifndef HAS_TOUCH
-        display_obj.tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-        display_obj.tft.setCursor(x0, 276);
-        char slots[64];
-        int n = snprintf(slots, sizeof(slots), "Slots:");
-        char* p = slots + n;
-        int rem = (int)sizeof(slots) - n;
-        for (uint8_t i = 0; i < WARDRIVE_CORE_MAX_NODES; i++) {
-            if (!(node_table[i].flags & NODE_FLAG_ACTIVE)) continue;
-            if (rem <= 1) break;
-            uint8_t s_idx = node_table[i].start_channel_idx;
-            uint8_t e_idx = node_table[i].end_channel_idx;
-            // Guard against malformed indices — shouldn't happen, but be safe.
-            if (s_idx >= NUM_SCAN_CHANNELS || e_idx >= NUM_SCAN_CHANNELS) continue;
-            int w = snprintf(p, rem, " %u=%u-%u",
-                             (unsigned)(i + 1),
-                             (unsigned)scan_channels[s_idx],
-                             (unsigned)scan_channels[e_idx]);
-            if (w > 0 && w < rem) { p += w; rem -= w; }
-            else break;
-        }
-        padTo(slots, sizeof(slots), 40);
-        display_obj.tft.print(slots);
-        #endif // !HAS_TOUCH
     #endif
 }
 
