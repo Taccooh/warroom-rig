@@ -1249,16 +1249,27 @@ void WardriveCore::refreshCoreDisplay() {
 
             tft.setTextSize(1);
 
-            // Assigned channel slice, in gold.
+            // Assigned channel slice, in gold, plus a BLE marker on the node that
+            // also runs the BLE scanner. No protocol field needed: the node derives
+            // its BLE role from the admin packet WE send —
+            //   ble_host = (node_count <= 1) || (node_index == node_count - 1)
+            // (WiFiOps.cpp) — so mirroring that predicate here is exact. It can lag
+            // by one admin round right after a topology change, until the new
+            // assignment reaches the node.
+            const bool ble_host = (n <= 1) || (nr.assigned_index == n - 1);
             tft.setTextColor(WC_GOLD, rowbg);
             tft.setCursor(WC_X_SLICE, ty);
             if (nr.start_channel_idx < NUM_SCAN_CHANNELS &&
                 nr.end_channel_idx   < NUM_SCAN_CHANNELS)
-                snprintf(buf, sizeof(buf), "%u-%-6u",
+                snprintf(buf, sizeof(buf), "%u-%u%s",
                          (unsigned)scan_channels[nr.start_channel_idx],
-                         (unsigned)scan_channels[nr.end_channel_idx]);
+                         (unsigned)scan_channels[nr.end_channel_idx],
+                         ble_host ? " BLE" : "");
             else
-                snprintf(buf, sizeof(buf), "%-9s", "-");
+                snprintf(buf, sizeof(buf), "%s", ble_host ? "BLE" : "-");
+            // Pad to the column width so a shorter value overwrites the old tail.
+            for (size_t p = strlen(buf); p < 10 && p < sizeof(buf) - 1; p++) buf[p] = ' ';
+            buf[10] = '\0';
             tft.print(buf);
 
             // Wigle lines contributed by this node.
