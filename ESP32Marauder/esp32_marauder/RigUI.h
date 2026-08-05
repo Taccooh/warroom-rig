@@ -41,12 +41,13 @@ class RigUI {
 public:
     void init();                     // take the screen; draw home
     void main(uint32_t currentTime); // called from loop() in place of MenuFunctions::main
+    void drawMenuList();             // paints any menu in the rig's language
 
 private:
     enum class Screen : uint8_t {
         HOME,     // our console — we own input and drawing
         RUNNING,  // a rig function owns the screen; wait for it to hand back
-        LEGACY,   // the Marauder tool tree owns the screen
+        MENU,     // the tool tree, drawn by us in the rig's own language
     };
 
     Screen screen = Screen::HOME;
@@ -63,6 +64,7 @@ private:
     bool nav_up_down = false;
     bool nav_dn_down = false;
     bool nav_r_down = false;
+    bool nav_l_down = false;
     bool c_down = false;
     uint32_t c_press_start_ms = 0;
 
@@ -78,6 +80,12 @@ private:
     void drawHome(int only = -1);
     void handleHomeInput(uint32_t currentTime);
     void activate(uint8_t index);
+
+    // ---- tool tree, drawn in the rig's language instead of Marauder's -------
+    uint8_t menu_top = 0;            // first visible row (scroll window)
+    void handleMenuInput(uint32_t currentTime);
+    void enterMenu();                // adopt whatever menu we were handed
+    void runSessionMenu();           // Rig Mode start/stop/re-sync, rig-styled
 };
 
 extern RigUI rig_ui_obj;
