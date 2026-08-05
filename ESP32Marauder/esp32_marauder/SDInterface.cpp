@@ -156,6 +156,34 @@ void SDInterface::listDir(String str_dir){
 }
 
 void SDInterface::runUpdate(String file_name) {
+  // SD update needs a *second* app slot to write into. On a single-app-slot
+  // layout (huge_app, which is what buys this build its 3 MB app partition)
+  // esp_ota_get_next_update_partition() hands back the partition we are
+  // currently executing from — Update.begin() would then erase the running
+  // firmware mid-flight and leave a brick that only USB can revive. Refuse
+  // instead, and say why.
+  {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    const esp_partition_t* target  = esp_ota_get_next_update_partition(NULL);
+    if (target == NULL || target == running) {
+      Serial.println(F("SD update unavailable: no second OTA slot on this "
+                       "partition layout. Flash over USB instead."));
+      #ifdef HAS_SCREEN
+        display_obj.tft.setTextWrap(false);
+        display_obj.tft.setFreeFont(NULL);
+        display_obj.tft.setCursor(0, TFT_HEIGHT / 3);
+        display_obj.tft.setTextSize(1);
+        display_obj.tft.setTextColor(TFT_RED);
+        display_obj.tft.println("SD update unavailable");
+        display_obj.tft.setTextColor(TFT_WHITE);
+        display_obj.tft.println("No 2nd OTA slot in this");
+        display_obj.tft.println("partition layout.");
+        display_obj.tft.println("Flash over USB instead.");
+      #endif
+      return;
+    }
+  }
+
   if (file_name == "")
     file_name = "/update.bin";
 
