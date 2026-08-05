@@ -5,12 +5,7 @@
 #include "Display.h"
 #include "MenuFunctions.h"
 #include "RigTheme.h"
-#include "TrackView.h"
 #include "WiFiScan.h"
-
-#if defined(HAS_GPS)
-    extern TrackView track_view_obj;
-#endif
 
 #ifdef MARAUDER_CORE_MODE
     #include "WardriveCore.h"
@@ -468,13 +463,6 @@ void RigUI::handleMenuInput(uint32_t currentTime) {
 }
 
 void RigUI::main(uint32_t currentTime) {
-    // Record the trail regardless of which screen is up, so opening TRACK shows
-    // the whole drive rather than starting from wherever you happened to look.
-    // sample() rate-limits and rejects jitter itself, so this is cheap.
-    #if defined(HAS_GPS)
-        track_view_obj.sample(currentTime);
-    #endif
-
     // Modes that signal their exit by raising exit_draw rather than clearing the
     // scan mode themselves. The old dispatcher translated that into "stop"; for
     // our own run-views we have to do it here, or the mode would never end.

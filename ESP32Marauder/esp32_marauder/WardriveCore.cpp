@@ -10,6 +10,7 @@
 // Marauder integration: Phase 3, 2026-05-06.
 
 #include "WardriveCore.h"
+#include "RigTheme.h"
 
 #ifdef MARAUDER_CORE_MODE
 
@@ -1047,11 +1048,14 @@ void WardriveCore::runTick(uint32_t currentTime) {
 // a signal-bar RSSI. Row density adapts: roomy for a small fleet, compact once
 // more than six nodes are registered (up to WARDRIVE_CORE_MAX_NODES).
 
-static const uint16_t WC_GOLD   = 0xEDA9;  // clan gold
-static const uint16_t WC_INK    = 0xEF3B;  // warm off-white
-static const uint16_t WC_DIM    = 0x8C0E;  // muted label
-static const uint16_t WC_DIM2   = 0x5AC9;  // faint hint
-static const uint16_t WC_PANEL  = 0x1081;  // panel fill
+// Palette shared with the rest of the rig UI -- see RigTheme.h. These were
+// local copies until the greys had to be fixed for daylight and the fix had
+// to be made twice; aliasing keeps the next change to one place.
+static const uint16_t WC_GOLD   = RigTheme::GOLD;
+static const uint16_t WC_INK    = RigTheme::INK;
+static const uint16_t WC_DIM    = RigTheme::DIM;
+static const uint16_t WC_DIM2   = RigTheme::DIM2;
+static const uint16_t WC_PANEL  = RigTheme::PANEL;
 static const uint16_t WC_PANEL3 = 0x2902;  // panel outline
 static const uint16_t WC_GREEN  = 0x6E6D;
 static const uint16_t WC_AMBER  = 0xFD20;

@@ -56,7 +56,6 @@ https://www.online-utility.org/image/convert/to/XBM
   #include "Display.h"
   #include "MenuFunctions.h"
   #include "RigUI.h"
-  #include "TrackView.h"
 #endif
 
 #ifdef HAS_BUTTONS
@@ -110,9 +109,6 @@ Settings settings_obj;
   Display display_obj;
   MenuFunctions menu_function_obj;
   RigUI rig_ui_obj;              // owns the console; delegates the legacy tool tree
-  #ifdef HAS_GPS
-    TrackView track_view_obj;    // session breadcrumb, sampled from the loop
-  #endif
 #endif
 
 #if defined(HAS_SD) && !defined(HAS_C5_SD)

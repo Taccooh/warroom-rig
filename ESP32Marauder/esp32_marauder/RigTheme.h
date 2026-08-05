@@ -24,8 +24,14 @@ namespace RigTheme {
 
     // Text ramp, brightest to faintest.
     static const uint16_t INK     = 0xEF3B;   // warm off-white — primary label
-    static const uint16_t DIM     = 0x8C0E;   // secondary label
-    static const uint16_t DIM2    = 0x5AC9;   // hint, footer, disabled
+    static const uint16_t DIM     = 0xCE79;   // secondary label
+    static const uint16_t DIM2    = 0x9CF3;   // hint, footer, disabled
+
+    // The two greys were 0x8C0E / 0x5AC9, picked on a desk. In daylight,
+    // through a windscreen, at the angle a rig actually sits, they were not
+    // dim -- they were gone. A label you cannot read is not a quiet label,
+    // it is a missing one, so the ramp now starts where it stays legible and
+    // uses size and weight to signal hierarchy instead of fading out.
 
     // Surfaces.
     static const uint16_t PANEL   = 0x1081;   // idle card fill

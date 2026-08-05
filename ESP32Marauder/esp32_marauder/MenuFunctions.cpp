@@ -1,9 +1,5 @@
 #include "MenuFunctions.h"
 #include "RigUI.h"          // RigUI paints the menus; displayCurrentMenu defers to it
-#include "TrackView.h"      // warroom-rig Track entry in the Tools drawer
-#if defined(HAS_SCREEN) && defined(HAS_GPS)
-  extern TrackView track_view_obj;
-#endif
 #include "lang_var.h"
 #include "WardriveCore.h"   // Core-Mode Session-Steuerung (Header intern MARAUDER_CORE_MODE-guarded)
 
@@ -1763,13 +1759,6 @@ void MenuFunctions::RunSetup()
   this->addNodes(&toolsMenu, text09, TFTLIGHTGREY, 0, [this]() {
     this->changeMenu(toolsMenu.parentMenu, true);
   });
-  // warroom-rig: ours, not a Marauder scanner -- it sits at the top of the
-  // drawer because it is the one entry here you open mid-drive.
-  #if defined(HAS_GPS)
-    this->addNodes(&toolsMenu, "Track", TFTGOLD, GPS_MENU, [this]() {
-      track_view_obj.run();
-    });
-  #endif
   this->addNodes(&toolsMenu, text_table1[7], TFTSKYBLUE, WIFI, [this]() {
     this->changeMenu(&wifiMenu, true);
   });
