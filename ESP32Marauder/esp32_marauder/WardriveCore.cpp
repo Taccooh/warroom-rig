@@ -353,8 +353,26 @@ bool WardriveCore::broadcastSession(uint8_t command) {
     return ok;
 }
 
+// Open the log on first demand — i.e. when a session actually starts.
+//
+// One Rig Mode visit yields at most one file, not one per start/stop cycle:
+// stopping does not close it. That is deliberate. Lines sit in the Marauder
+// buffer until buffer_obj.save() runs in the main loop, so swapping the target
+// file at stop time would file the tail of a session under the next one. A
+// single file per visit costs nothing on upload and cannot mis-attribute rows.
+void WardriveCore::ensureLogOpen() {
+    #ifdef HAS_SD
+        if (log_open || !sd_healthy || !sd_obj.supported) return;
+        wifi_scan_obj.startLog("wardrive_core");   // const char* since v1.12.2
+        buffer_obj.append(wifi_scan_obj.header_line);
+        log_open = true;
+        Serial.println("CORE: log opened for this session");
+    #endif
+}
+
 void WardriveCore::startSession() {
     if (!is_running) return;
+    ensureLogOpen();
     collecting = true;
     Serial.printf("CORE: SESSION START (%u nodes)\n", getActiveNodeCount());
     broadcastSession(SESSION_CMD_START);
@@ -372,6 +390,7 @@ void WardriveCore::resyncSession() {
     // Alle aktuell registrierten Nodes (inkl. Spaet-Joiner) frisch
     // partitionieren; das neue Admin geht per Check-in raus, START breit.
     handleNodeTopologyChange();
+    ensureLogOpen();   // resync can be the first thing that starts collecting
     collecting = true;
     Serial.printf("CORE: SESSION RESYNC + START (%u nodes)\n", getActiveNodeCount());
     broadcastSession(SESSION_CMD_START);
@@ -713,16 +732,21 @@ void WardriveCore::init() {
         }
     #endif
 
-    // Step 6: SD-File oeffnen via Marauder-Buffer.
+    // Step 6: SD pruefen — aber noch KEINE Logdatei anlegen.
+    //
+    // Das Log wird erst beim Session-Start geoeffnet (ensureLogOpen()). Vorher
+    // legte init() es hier an und schrieb sofort die Wigle-Kopfzeile: damit
+    // hinterliess jeder Blick in Rig Mode — nur mal nachsehen, ob die Nodes da
+    // sind — eine wardrive_core_N.log mit genau einer Zeile. Die SD lief davon
+    // voll, und die Upload-Auswahl war voll leerer Dateien, zwischen denen die
+    // echten Fahrten nicht mehr zu finden waren.
     #ifdef HAS_SD
-        if (sd_obj.supported) {
-            wifi_scan_obj.startLog("wardrive_core");  // startLog takes const char* since v1.12.2
-            buffer_obj.append(wifi_scan_obj.header_line);
-        } else {
+        if (!sd_obj.supported) {
             Serial.println("CORE: WARN — SD not supported, logging disabled");
             sd_healthy = false;
         }
     #endif
+    log_open = false;
 
     // Step 7: Queue erstellen.
     rx_queue = xQueueCreate(WARDRIVE_CORE_QUEUE_LEN, sizeof(WardriveCoreQueueMsg));

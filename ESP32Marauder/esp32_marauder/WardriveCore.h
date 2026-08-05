@@ -249,6 +249,12 @@ private:
 
     // SD-Health.
     bool     sd_healthy;
+
+    // Gesetzt, sobald das Session-Log wirklich angelegt wurde. init() legt
+    // keine Datei mehr an, damit blosses Betreten von Rig Mode nichts auf der
+    // Karte hinterlaesst; ensureLogOpen() holt das beim Session-Start nach.
+    bool     log_open = false;
+    void     ensureLogOpen();
 };
 
 // Globale Instanz wird in esp32_marauder.ino unter MARAUDER_CORE_MODE definiert.
