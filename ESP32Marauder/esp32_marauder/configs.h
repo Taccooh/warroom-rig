@@ -32,7 +32,7 @@
   //#define WARDRIVE_2_4_ONLY
 
   // WDGWARS UPLOAD FEATURE TOGGLE — orthogonal zu Hardware-Target und Core-Mode.
-  // Aktiviert den Upload von Wigle-CSV-Logs zu wdgwars.pl/api/upload-csv via STA.
+  // Aktiviert den Upload von Wigle-CSV-Logs zu wdgwars.pl/api/v2/upload-csv via STA.
   // Sinnvoll wenn der Marauder GPS+SD hat und ein Heim-AP erreichbar ist.
   //#define MARAUDER_WDGWARS_UPLOAD
 

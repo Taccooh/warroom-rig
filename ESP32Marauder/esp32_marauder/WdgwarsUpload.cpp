@@ -29,7 +29,12 @@ extern SDInterface sd_obj;
 // =========================================================================
 static const char* WDG_HOST = "wdgwars.pl";
 static const uint16_t WDG_PORT = 443;
-static const char* WDG_PATH = "/api/upload-csv";
+// v2 is the generation the platform's own reference firmware talks to: upstream
+// ESP32Marauder has POSTed here since it gained wdgwars support (v1.12.3), and
+// still does in v1.14.1. The legacy /api/upload-csv route is what Bruce-era
+// integrations used; both still authenticate, but only v2 is actively shipped
+// against, so that is the one to be on.
+static const char* WDG_PATH = "/api/v2/upload-csv";
 
 // Multipart boundary — fixed, no need for randomness because it cannot
 // collide with WigleWifi-1.6 CSV bytes (the format never emits "--marauder...").
@@ -46,15 +51,25 @@ static const char* WDG_BOUNDARY = "marauderboundary7f3a9c2e4b1d8f5a";
 static const size_t UPLOAD_CHUNK_BYTES = 1024;
 
 // =========================================================================
-// Embedded Google Trust Services root CAs
+// Embedded root CAs — both issuer families Cloudflare fronts this host with
 // =========================================================================
-// wdgwars.pl migrated off Let's Encrypt to Google Trust Services (cert issued
-// 2026-05-31). It now chains: wdgwars.pl -> GTS "WE1" (ECDSA intermediate) ->
-// GTS Root R4. R4 is the anchor that validates the current chain; R1 (Google's
-// RSA root) is included so a future WE-intermediate re-anchoring does not brick
-// uploads. Both roots are valid until 2036. If uploads fail again with "TLS
-// connect failed", re-check with `openssl s_client -connect wdgwars.pl:443
-// -servername wdgwars.pl` and refresh these anchors from https://pki.goog/repo/.
+// wdgwars.pl sits behind Cloudflare, whose Universal SSL hands out edge certs
+// from more than one CA and re-picks on renewal. That is precisely how this
+// broke before: the pinned Let's Encrypt anchors stopped matching when the host
+// came up on Google Trust Services (2026-05-31), and pinning only GTS in
+// response just re-arms the same trap pointing the other way.
+//
+// So trust both families rather than whichever one happens to be live:
+//   * GTS Root R1 (RSA) + R4 (ECDSA) — https://pki.goog/repo/
+//   * ISRG Root X1 (RSA) + X2 (ECDSA) — https://letsencrypt.org/certificates/
+// All four are self-signed roots valid into the 2035-2040 range, so a renewal
+// or an intermediate re-anchoring inside either family stays covered.
+//
+// Current chain (2026-08-04): wdgwars.pl -> GTS "WE1" -> GTS Root R4.
+// If uploads ever fail with "TLS connect failed" again, check what is actually
+// being served — `openssl s_client -connect wdgwars.pl:443 -servername
+// wdgwars.pl` — before touching anything else; a third CA family would need its
+// root added here. Verify any root you add by SHA-256 fingerprint, not by URL.
 static const char* WDG_CA_BUNDLE PROGMEM = R"PEM(
 -----BEGIN CERTIFICATE-----
 MIIFVzCCAz+gAwIBAgINAgPlk28xsBNJiGuiFzANBgkqhkiG9w0BAQwFADBHMQsw
@@ -99,6 +114,51 @@ HYqjQjBAMA4GA1UdDwEB/wQEAwIBhjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQW
 BBSATNbrdP9JNqPV2Py1PsVq8JQdjDAKBggqhkjOPQQDAwNpADBmAjEA6ED/g94D
 9J+uHXqnLrmvT/aDHQ4thQEd0dlq7A/Cr8deVl5c1RxYIigL9zC2L7F8AjEA8GE8
 p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw
+CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg
+R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00
+MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT
+ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw
+EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW
++1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9
+ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T
+AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI
+zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW
+tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1
+/q4AaOeMSQ+2b1tbFfLn
 -----END CERTIFICATE-----
 )PEM";
 
@@ -497,17 +557,27 @@ bool WdgwarsUpload::uploadOneFile(const String& path) {
         return false;
     }
 
-    int code = parseHttpStatus(client);
+    String server_msg;
+    int code = parseHttpStatus(client, server_msg);
     last_http_code = code;
+    last_server_msg = server_msg;
     client.stop();
 
     if (code >= 200 && code < 300) {
         total_bytes_uploaded += fsize;
-        Serial.printf("WDG: upload OK code=%d size=%u\n", code, fsize);
+        // The success body carries the import summary (imported / captured /
+        // duplicates), which is worth having in the serial log.
+        Serial.printf("WDG: upload OK code=%d size=%u %s\n",
+                      code, fsize, server_msg.c_str());
         return true;
     }
-    last_error_msg = "HTTP " + String(code);
-    Serial.printf("WDG: upload FAIL code=%d\n", code);
+
+    // Negative codes are our own local failures, not the server's verdict.
+    if (code == -1)      last_error_msg = "no reply (timeout)";
+    else if (code == -2) last_error_msg = "bad reply from server";
+    else                 last_error_msg = "HTTP " + String(code) +
+                                          (server_msg.length() ? ": " + server_msg : "");
+    Serial.printf("WDG: upload FAIL code=%d msg=%s\n", code, server_msg.c_str());
     return false;
 }
 
@@ -586,8 +656,57 @@ bool WdgwarsUpload::sendMultipartPOST(WiFiClientSecure& client,
     return true;
 }
 
-// Parse HTTP status code from server response. Drains body but ignores it.
-int WdgwarsUpload::parseHttpStatus(WiFiClientSecure& client) {
+// Pull the human-readable reason out of a wdgwars response body.
+//
+// The server answers JSON — {"ok":false,"error":"Missing or invalid API key"} on
+// failure, and an import summary on success. Cloudflare may deliver it chunked,
+// so rather than parse framing we lift the quoted value of the first "error" /
+// "message" / "detail" key we find. If none is present (an HTML error page from
+// the edge, say), fall back to the raw text with markup and whitespace runs
+// collapsed, which still beats showing nothing.
+static String extractServerMessage(const String& raw) {
+    const char* keys[] = { "\"error\"", "\"message\"", "\"detail\"" };
+    for (uint8_t k = 0; k < 3; k++) {
+        int at = raw.indexOf(keys[k]);
+        if (at < 0) continue;
+        int colon = raw.indexOf(':', at + strlen(keys[k]) - 1);
+        if (colon < 0) continue;
+        int q1 = raw.indexOf('"', colon + 1);
+        if (q1 < 0) continue;
+        int q2 = raw.indexOf('"', q1 + 1);
+        if (q2 < 0) continue;
+        String msg = raw.substring(q1 + 1, q2);
+        msg.trim();
+        if (msg.length() > 0) return msg;
+    }
+
+    // No JSON message — flatten whatever came back.
+    String flat;
+    flat.reserve(raw.length());
+    bool in_tag = false, last_space = false;
+    for (size_t i = 0; i < raw.length(); i++) {
+        char c = raw.charAt(i);
+        if (c == '<') { in_tag = true;  continue; }
+        if (c == '>') { in_tag = false; continue; }
+        if (in_tag) continue;
+        bool is_space = (c == ' ' || c == '\t' || c == '\r' || c == '\n');
+        if (is_space) {
+            if (!last_space && flat.length() > 0) flat += ' ';
+            last_space = true;
+        } else {
+            flat += c;
+            last_space = false;
+        }
+    }
+    flat.trim();
+    return flat;
+}
+
+// Parse the HTTP status code, and capture the start of the body so the caller
+// can report *why* the server said no. Knowing "HTTP 400" alone is what made an
+// ordinary rejection look like an unreachable API; the body carries the reason.
+int WdgwarsUpload::parseHttpStatus(WiFiClientSecure& client, String& msg_out) {
+    msg_out = "";
     uint32_t start = millis();
     while (client.connected() && !client.available()) {
         if (millis() - start > WDGWARS_HTTP_TIMEOUT_MS) return -1;
@@ -599,6 +718,34 @@ int WdgwarsUpload::parseHttpStatus(WiFiClientSecure& client) {
     int sp2 = status.indexOf(' ', sp1 + 1);
     if (sp1 < 0 || sp2 < 0) return -2;
     int code = status.substring(sp1 + 1, sp2).toInt();
+
+    // Skip response headers — everything up to the blank separator line.
+    while (millis() - start <= WDGWARS_HTTP_TIMEOUT_MS) {
+        if (client.available()) {
+            String h = client.readStringUntil('\n');
+            h.trim();
+            if (h.length() == 0) break;      // end of headers
+        } else if (!client.connected()) {
+            break;
+        } else {
+            delay(5);
+        }
+    }
+
+    // Body prefix — bounded, we only want the reason string.
+    String raw;
+    raw.reserve(RESP_SNIPPET_BYTES);
+    while (raw.length() < RESP_SNIPPET_BYTES &&
+           (millis() - start) <= WDGWARS_HTTP_TIMEOUT_MS) {
+        if (client.available()) {
+            raw += (char)client.read();
+        } else if (!client.connected()) {
+            break;
+        } else {
+            delay(5);
+        }
+    }
+    msg_out = extractServerMessage(raw);
 
     // Drain remainder so the connection closes cleanly.
     while (client.connected() && client.available()) {
@@ -622,6 +769,40 @@ void WdgwarsUpload::renameToUploaded(const String& path) {
 // =========================================================================
 // UI
 // =========================================================================
+#ifdef HAS_SCREEN
+// Word-wrap a message across the narrow TFT. Server reasons ("Missing or
+// invalid API key", "Invalid timestamps in file") do not fit one 240 px line,
+// and a truncated reason is close to useless. Advances y past what it drew.
+static void wdgPrintWrapped(int16_t x, int16_t& y, int16_t lh,
+                            const String& s, uint8_t max_lines) {
+    const uint8_t cpl = display_obj.tft.width() / 6;   // ~6 px per char at size 1
+    if (cpl == 0 || s.length() == 0) return;
+    uint16_t pos = 0;
+    for (uint8_t line = 0; line < max_lines && pos < s.length(); line++) {
+        uint16_t take = ((s.length() - pos) < cpl) ? (s.length() - pos) : cpl;
+        // On the last line we are allowed to spend, keep the tail visible by
+        // marking the cut rather than silently dropping the rest.
+        bool truncating = (line + 1 == max_lines) && (pos + take < s.length());
+        if (!truncating && take == cpl) {
+            // Break on the last space in the window so words stay intact.
+            int brk = -1;
+            for (uint16_t i = take; i > 0; i--) {
+                if (s.charAt(pos + i - 1) == ' ') { brk = i - 1; break; }
+            }
+            if (brk > 0) take = brk;
+        }
+        String chunk = s.substring(pos, pos + take);
+        if (truncating && chunk.length() > 3) {
+            chunk = chunk.substring(0, chunk.length() - 3) + "...";
+        }
+        display_obj.tft.setCursor(x, y); y += lh;
+        display_obj.tft.print(chunk);
+        pos += take;
+        while (pos < s.length() && s.charAt(pos) == ' ') pos++;   // eat the break
+    }
+}
+#endif  // HAS_SCREEN
+
 void WdgwarsUpload::renderDisplay() {
     #ifdef HAS_SCREEN
         // Clear ONLY below the framework status bar + "WDGWars Upload" banner that
@@ -695,13 +876,19 @@ void WdgwarsUpload::renderDisplay() {
                 display_obj.tft.printf("Sent: %llu KB",
                                        (unsigned long long)(total_bytes_uploaded / 1024));
                 if (last_http_code != 0) {
-                    display_obj.tft.setCursor(4, y);
+                    display_obj.tft.setCursor(4, y); y += LH;
                     display_obj.tft.printf("Last HTTP: %d", last_http_code);
+                }
+                // Why the last one failed, in the server's own words.
+                if (err_count > 0 && last_error_msg.length() > 0) {
+                    display_obj.tft.setTextColor(TFT_RED);
+                    wdgPrintWrapped(4, y, LH, last_error_msg, 3);
+                    display_obj.tft.setTextColor(TFT_WHITE);
                 }
                 break;
             }
 
-            case State::DONE:
+            case State::DONE: {
                 display_obj.tft.setTextColor(TFT_GREEN);
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.print("Done.");
@@ -713,9 +900,21 @@ void WdgwarsUpload::renderDisplay() {
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.printf("Total: %llu KB",
                                        (unsigned long long)(total_bytes_uploaded / 1024));
-                display_obj.tft.setCursor(4, y + LH);
+                // A run that ended with failures must say why, not just count
+                // them — otherwise every cause looks like "upload is broken".
+                bool showed_err = (err_count > 0 && last_error_msg.length() > 0);
+                if (showed_err) {
+                    y += 4;
+                    display_obj.tft.setTextColor(TFT_RED);
+                    wdgPrintWrapped(4, y, LH, last_error_msg, 4);
+                    display_obj.tft.setTextColor(TFT_WHITE);
+                }
+                // Keep the original blank-line gap before the hint; after a
+                // wrapped error block the text already provides the separation.
+                display_obj.tft.setCursor(4, y + (showed_err ? 4 : LH));
                 display_obj.tft.print("Hold CENTER 2s to exit.");
                 break;
+            }
 
             default:
                 display_obj.tft.setCursor(4, y);

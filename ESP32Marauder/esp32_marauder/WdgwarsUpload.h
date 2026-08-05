@@ -18,7 +18,7 @@
 // WdgwarsUpload
 // =========================================================================
 // Phase-5 module: bulk-uploads finished Wigle-CSV wardrive logs from the SD
-// card to https://wdgwars.pl/api/upload-csv via X-API-Key auth, then renames
+// card to https://wdgwars.pl/api/v2/upload-csv via X-API-Key auth, then renames
 // each successfully uploaded file to "<name>.uploaded" so subsequent runs
 // skip it.
 //
@@ -33,8 +33,10 @@
 // File is loaded once at init(); init() bails out cleanly if any field is
 // missing, displaying an error.
 //
-// TLS: uses WiFiClientSecure with two embedded Let's Encrypt root CAs
-// (ISRG Root X1 + X2). No setInsecure() — strict cert validation.
+// TLS: WiFiClientSecure with four embedded root CAs — Google Trust Services
+// R1 + R4 and Let's Encrypt ISRG X1 + X2 — because the host is Cloudflare-
+// fronted and its edge cert can be issued by either family. No setInsecure();
+// validation stays strict. See the bundle comment in the .cpp.
 // =========================================================================
 
 class WdgwarsUpload {
@@ -94,6 +96,12 @@ private:
     // HTTP-response sticky-fields for the last attempt (for display on error).
     int last_http_code = 0;
     String last_error_msg;
+    String last_server_msg;   // reason text lifted from the response body
+
+    // How much of the response body to keep. The reason string is the only part
+    // we want; a couple of hundred bytes covers it without holding a whole
+    // error page in RAM.
+    static const size_t RESP_SNIPPET_BYTES = 192;
 
     // Display + button-tracking.
     uint32_t last_display_refresh_ms = 0;
@@ -114,7 +122,7 @@ private:
                            const String& path,
                            File& file,
                            size_t file_size);
-    int  parseHttpStatus(WiFiClientSecure& client);
+    int  parseHttpStatus(WiFiClientSecure& client, String& msg_out);
 
     // UI.
     void renderDisplay();
