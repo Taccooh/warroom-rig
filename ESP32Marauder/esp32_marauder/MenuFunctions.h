@@ -201,11 +201,6 @@ class MenuFunctions
     void setupSDFileList(bool update = false);
     void buildSDFileMenu(bool update = false);
     void displayMenuButtons();
-    void drawRigHome(int only = -1);   // warroom-rig home console; only>=0 repaints just one element (flicker-free nav)
-    void drawRigHeader(bool full);     // warroom-rig home header: mascot/wordmark (full) + honest live GPS/SD line
-    #ifdef HAS_TOUCH
-      int rigHomeHitTest(uint16_t x, uint16_t y);  // map a tap to a home-console card index (touch boards, e.g. V8); -1 if missed
-    #endif
     uint16_t getColor(uint16_t color);
     void drawAvgLine(int16_t value);
     void drawMaxLine(int16_t value, uint16_t color);
@@ -244,6 +239,19 @@ class MenuFunctions
     #endif
 
   public:
+    // warroom-rig: RigUI owns the console and drives these directly. The home
+    // renderer lives here for now because it still draws through this class's
+    // layout constants; the menu accessors exist so RigUI can read the entry
+    // list and spot the hand-back to the root without reaching into privates.
+    void drawRigHome(int only = -1);   // warroom-rig home console; only>=0 repaints just one element (flicker-free nav)
+    void drawRigHeader(bool full);     // warroom-rig home header: mascot/wordmark (full) + honest live GPS/SD line
+    Menu* getMainMenu()  { return &mainMenu; }
+    Menu* getToolsMenu() { return &toolsMenu; }
+    void runCoreSessionMenu();   // Rig Mode's start/stop/re-sync modal (R button)
+    #ifdef HAS_TOUCH
+      int rigHomeHitTest(uint16_t x, uint16_t y);  // map a tap to a home-console card index (touch boards, e.g. V8); -1 if missed
+    #endif
+
     Menu* current_menu;
     Menu clearSSIDsMenu;
     Menu clearAPsMenu;

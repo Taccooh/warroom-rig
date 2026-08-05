@@ -55,6 +55,7 @@ https://www.online-utility.org/image/convert/to/XBM
 #ifdef HAS_SCREEN
   #include "Display.h"
   #include "MenuFunctions.h"
+  #include "RigUI.h"
 #endif
 
 #ifdef HAS_BUTTONS
@@ -107,6 +108,7 @@ Settings settings_obj;
 #ifdef HAS_SCREEN
   Display display_obj;
   MenuFunctions menu_function_obj;
+  RigUI rig_ui_obj;              // owns the console; delegates the legacy tool tree
 #endif
 
 #if defined(HAS_SD) && !defined(HAS_C5_SD)
@@ -435,7 +437,8 @@ void setup()
     #if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
       display_obj.clearScreen();
     #endif
-    menu_function_obj.RunSetup();
+    menu_function_obj.RunSetup();   // builds the menu tree (incl. the legacy tools)
+    rig_ui_obj.init();              // ...then RigUI takes the screen and draws the console
   #endif
 
   /*char ssidBuf[64] = {0};  // or prefill with existing SSID
@@ -495,7 +498,9 @@ void loop()
   if ((wifi_scan_obj.currentScanMode != WIFI_PACKET_MONITOR) ||
       (mini)) {
     #ifdef HAS_SCREEN
-      menu_function_obj.main(currentTime);
+      // RigUI is the entry point now. It handles our own screens and calls
+      // MenuFunctions::main() itself while the legacy tool tree has the display.
+      rig_ui_obj.main(currentTime);
     #endif
   }
   #ifdef HAS_FLIPPER_LED
