@@ -1,5 +1,6 @@
 #include "RigUI.h"
 
+#include "RigInput.h"
 #ifdef HAS_SCREEN
 
 #include "Display.h"
@@ -106,11 +107,11 @@ void RigUI::handleHomeInput(uint32_t currentTime) {
     #endif
 
     // ---- Button boards (Marauder V7) ---------------------------------------
-    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && (U_BTN >= 0) && (D_BTN >= 0)
+    #ifdef RIG_HAS_NAV
 
         // UP / DOWN — move the highlight. Only the two affected entries are
         // repainted, so navigating does not flash the whole console.
-        bool u = (digitalRead(U_BTN) == LOW);
+        bool u = (RigInput::down(RigInput::UP));
         if (u && !nav_up_down && cursor > 0) {
             uint8_t prev = cursor--;
             drawHome(prev);
@@ -118,7 +119,7 @@ void RigUI::handleHomeInput(uint32_t currentTime) {
         }
         nav_up_down = u;
 
-        bool d = (digitalRead(D_BTN) == LOW);
+        bool d = (RigInput::down(RigInput::DOWN));
         if (d && !nav_dn_down && cursor + 1 < n) {
             uint8_t prev = cursor++;
             drawHome(prev);
@@ -129,7 +130,7 @@ void RigUI::handleHomeInput(uint32_t currentTime) {
         // CENTER — activate on release, so a press that turns into a hold does
         // not fire first and then leave the run-view seeing the same hold as
         // its own exit gesture.
-        bool c = (digitalRead(C_BTN) == LOW);
+        bool c = (RigInput::down(RigInput::SELECT));
         if (c && !c_down) {
             c_down = true;
             c_press_start_ms = currentTime;
@@ -158,12 +159,12 @@ void RigUI::handleHomeInput(uint32_t currentTime) {
 // Core Mode and Upload pick lists, so nothing else can see the presses meant
 // for it.
 void RigUI::runSessionMenu() {
-    #if defined(MARAUDER_CORE_MODE) && defined(HAS_BUTTONS) && (C_BTN >= 0)
+    #if defined(MARAUDER_CORE_MODE) && defined(RIG_HAS_NAV)
 
     auto& tft = display_obj.tft;
 
     // Let go of the R press that opened this, or it reads as cancel immediately.
-    while (digitalRead(R_BTN) == LOW) delay(10);
+    while (RigInput::down(RigInput::RIGHT)) delay(10);
     delay(50);
 
     const bool live = wardrive_core_obj.isCollecting();
@@ -183,10 +184,11 @@ void RigUI::runSessionMenu() {
     }
 
     // Panel sized to the option count, centred.
-    const int16_t pw = TFT_WIDTH - 2 * RigTheme::PAD_X;
-    const int16_t rh = 44, gap = 6;
-    const int16_t ph = 40 + nopts * (rh + gap) + 10;
-    const int16_t px = RigTheme::PAD_X, py = (TFT_HEIGHT - ph) / 2;
+    const int16_t pw = SCREEN_WIDTH - 2 * RigTheme::PAD_X;
+    const int16_t rh = RigTheme::MODAL_ROW_H, gap = RigTheme::COMPACT ? 4 : 6;
+    const int16_t ph = RigTheme::MODAL_HEAD + nopts * (rh + gap)
+                       + (RigTheme::COMPACT ? 12 : 10);
+    const int16_t px = RigTheme::PAD_X, py = (SCREEN_HEIGHT - ph) / 2;
 
     int  sel = 0;
     bool done = false, chosen = false, dirty = true;
@@ -198,44 +200,53 @@ void RigUI::runSessionMenu() {
             tft.drawRoundRect(px, py, pw, ph, RigTheme::RADIUS, RigTheme::GOLD);
             tft.setTextDatum(TL_DATUM);
             tft.setTextColor(RigTheme::GOLD, RigTheme::PANEL);
-            tft.drawString("SESSION", px + 12, py + 10, 4);
+            tft.drawString("SESSION", px + 12, py + (RigTheme::COMPACT ? 3 : 10),
+                           RigTheme::FONT_TITLE);
             tft.setTextDatum(TR_DATUM);
             tft.setTextColor(live ? RigTheme::GREEN : RigTheme::DIM2, RigTheme::PANEL);
-            tft.drawString(live ? "COLLECTING" : "IDLE", px + pw - 12, py + 18, 1);
+            tft.drawString(live ? "COLLECTING" : "IDLE", px + pw - 12,
+                           py + (RigTheme::COMPACT ? 7 : 18), 1);
 
             for (int i = 0; i < nopts; i++) {
                 bool s = (i == sel);
-                int16_t y = py + 40 + i * (rh + gap);
+                int16_t y = py + RigTheme::MODAL_HEAD + i * (rh + gap);
                 uint16_t fill = s ? RigTheme::PANEL_S : RigTheme::PANEL;
                 tft.fillRoundRect(px + 8, y, pw - 16, rh, 6, fill);
                 if (s) {
                     tft.drawRoundRect(px + 8, y, pw - 16, rh, 6, tint[i]);
                     tft.fillRect(px + 13, y + 7, RigTheme::ACCENT_W, rh - 14, tint[i]);
                 }
-                tft.setTextDatum(TL_DATUM);
+                // Middle-left datum puts the label on the row's centre line
+                // whether or not a subtitle sits under it. With a subtitle the
+                // label's centre is 14 px down, which is where it was drawn
+                // from the top edge before -- same pixels, one less special case.
+                tft.setTextDatum(ML_DATUM);
                 tft.setTextColor(s ? tint[i] : RigTheme::INK, fill);
-                tft.drawString(opts[i], px + 26, y + 6, 2);
-                tft.setTextColor(RigTheme::DIM, fill);
-                tft.drawString(subs[i], px + 26, y + 26, 1);
+                tft.drawString(opts[i], px + 26,
+                               y + (RigTheme::SHOW_SUBS ? 14 : rh / 2), 2);
+                if (RigTheme::SHOW_SUBS) {
+                    tft.setTextDatum(TL_DATUM);
+                    tft.setTextColor(RigTheme::DIM, fill);
+                    tft.drawString(subs[i], px + 26, y + 26, 1);
+                }
             }
 
             tft.setTextDatum(TL_DATUM);
             tft.setTextColor(RigTheme::DIM2, RigTheme::PANEL);
-            tft.drawString("U/D move   C confirm   L/R cancel",
-                           px + 12, py + ph - 14, 1);
+            tft.drawString(RIG_HINT_MODAL, px + 12, py + ph - 14, 1);
             dirty = false;
         }
 
-        bool u = (digitalRead(U_BTN) == LOW);
+        bool u = (RigInput::down(RigInput::UP));
         if (u && !pu) { sel = (sel + nopts - 1) % nopts; dirty = true; }
         pu = u;
-        bool d = (digitalRead(D_BTN) == LOW);
+        bool d = (RigInput::down(RigInput::DOWN));
         if (d && !pd) { sel = (sel + 1) % nopts; dirty = true; }
         pd = d;
-        bool lr = (digitalRead(L_BTN) == LOW) || (digitalRead(R_BTN) == LOW);
+        bool lr = (RigInput::down(RigInput::LEFT)) || (RigInput::down(RigInput::RIGHT));
         if (lr && !plr) { done = true; }
         plr = lr;
-        bool c = (digitalRead(C_BTN) == LOW);
+        bool c = (RigInput::down(RigInput::SELECT));
         if (!c && pc) { chosen = true; done = true; }   // act on release
         pc = c;
         delay(15);
@@ -281,7 +292,7 @@ void RigUI::runSessionMenu() {
 // wearing its case.
 
 static uint8_t menuVisibleRows() {
-    int usable = TFT_HEIGHT - RigTheme::HEADER_H - RigTheme::FOOTER_H;
+    int usable = SCREEN_HEIGHT - RigTheme::HEADER_H - RigTheme::FOOTER_H;
     int rows = usable / (RigTheme::ROW_H + RigTheme::ROW_GAP);
     if (rows < 1) rows = 1;
     if (rows > 24) rows = 24;
@@ -307,9 +318,10 @@ void RigUI::drawMenuList() {
     // ---- header: where you are, and that there is a way back ----
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(RigTheme::GOLD, TFT_BLACK);
-    tft.drawString(m->name, RigTheme::PAD_X, 10, 4);
-    tft.drawFastHLine(RigTheme::PAD_X, 38, TFT_WIDTH - 2 * RigTheme::PAD_X,
-                      RigTheme::OUTLINE);
+    tft.drawString(m->name, RigTheme::PAD_X, RigTheme::COMPACT ? 3 : 10,
+                   RigTheme::FONT_TITLE);
+    tft.drawFastHLine(RigTheme::PAD_X, RigTheme::HEADER_H - 8,
+                      SCREEN_WIDTH - 2 * RigTheme::PAD_X, RigTheme::OUTLINE);
 
     // Scroll position, only when there is something to scroll.
     if (n > rows) {
@@ -317,12 +329,13 @@ void RigUI::drawMenuList() {
         tft.setTextColor(RigTheme::DIM2, TFT_BLACK);
         char pos[16];
         snprintf(pos, sizeof(pos), "%u/%u", (unsigned)(sel + 1), (unsigned)n);
-        tft.drawString(pos, TFT_WIDTH - RigTheme::PAD_X, 22, 2);
+        tft.drawString(pos, SCREEN_WIDTH - RigTheme::PAD_X,
+                       RigTheme::COMPACT ? 6 : 22, 2);
     }
 
     // ---- rows ----
     const int16_t x = RigTheme::PAD_X;
-    const int16_t w = TFT_WIDTH - 2 * RigTheme::PAD_X;
+    const int16_t w = SCREEN_WIDTH - 2 * RigTheme::PAD_X;
     for (uint8_t r = 0; r < rows; r++) {
         uint8_t i = menu_top + r;
         if (i >= n) break;
@@ -345,17 +358,17 @@ void RigUI::drawMenuList() {
         bool is_toggle = (node.icon == SETTINGS);
         int16_t tx = x + 16;
         if (is_toggle) {
-            tft.fillCircle(x + 18, y + RigTheme::ROW_H / 2, 4,
+            tft.fillCircle(x + 18, y + RigTheme::ROW_H / 2, RigTheme::COMPACT ? 3 : 4,
                            node.selected ? RigTheme::GREEN : RigTheme::DIM2);
-            tx = x + 32;
+            tx = x + (RigTheme::COMPACT ? 28 : 32);
         }
 
         tft.setTextDatum(ML_DATUM);
         tft.setTextColor(s ? RigTheme::GOLD : RigTheme::INK, fill);
         String label = node.name;
-        uint8_t maxch = (uint8_t)((w - (tx - x) - 20) / 11);   // font 2 is ~11 px/char
+        uint8_t maxch = (uint8_t)((w - (tx - x) - 20) / RigTheme::ROW_CHAR_W);
         if (label.length() > maxch) label = label.substring(0, maxch);
-        tft.drawString(label, tx, y + RigTheme::ROW_H / 2, 2);
+        tft.drawString(label, tx, y + RigTheme::ROW_H / 2, RigTheme::FONT_ROW);
 
         if (s) {   // chevron: this row is the one C acts on
             int ax = x + w - 14, ay = y + RigTheme::ROW_H / 2;
@@ -366,8 +379,7 @@ void RigUI::drawMenuList() {
     // ---- footer ----
     tft.setTextDatum(ML_DATUM);
     tft.setTextColor(RigTheme::DIM2, TFT_BLACK);
-    tft.drawString("U/D move   C select   L back",
-                   RigTheme::PAD_X, TFT_HEIGHT - 11, 1);
+    tft.drawString(RIG_HINT_LIST, RigTheme::PAD_X, SCREEN_HEIGHT - 11, 1);
     tft.setTextDatum(TL_DATUM);
 }
 
@@ -378,21 +390,21 @@ void RigUI::enterMenu() {
 }
 
 void RigUI::handleMenuInput(uint32_t currentTime) {
-    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && (U_BTN >= 0) && (D_BTN >= 0)
+    #ifdef RIG_HAS_NAV
 
         Menu* m = menu_function_obj.current_menu;
         if (!m || !m->list) return;
         const uint8_t n = (uint8_t)m->list->size();
         if (n == 0) return;
 
-        bool u = (digitalRead(U_BTN) == LOW);
+        bool u = (RigInput::down(RigInput::UP));
         if (u && !nav_up_down) {
             m->selected = (m->selected == 0) ? (n - 1) : (m->selected - 1);
             drawMenuList();
         }
         nav_up_down = u;
 
-        bool d = (digitalRead(D_BTN) == LOW);
+        bool d = (RigInput::down(RigInput::DOWN));
         if (d && !nav_dn_down) {
             m->selected = (m->selected + 1 >= n) ? 0 : (m->selected + 1);
             drawMenuList();
@@ -400,8 +412,8 @@ void RigUI::handleMenuInput(uint32_t currentTime) {
         nav_dn_down = d;
 
         // LEFT — up one level. The tree also has explicit "Back" rows; both work.
-        #if (L_BTN >= 0)
-        bool l = (digitalRead(L_BTN) == LOW);
+        #ifdef RIG_HAS_LEFT
+        bool l = (RigInput::down(RigInput::LEFT));
         if (l && !nav_l_down) {
             nav_l_down = true;
             if (m->parentMenu) {
@@ -423,7 +435,7 @@ void RigUI::handleMenuInput(uint32_t currentTime) {
         }
         #endif
 
-        bool c = (digitalRead(C_BTN) == LOW);
+        bool c = (RigInput::down(RigInput::SELECT));
         if (c && !c_down) {
             c_down = true;
             c_press_start_ms = currentTime;
@@ -491,8 +503,8 @@ void RigUI::main(uint32_t currentTime) {
         // The exit gesture is a CENTER hold, so the button is still down right
         // now. Adopt that as an in-progress press and mark its release to be
         // dropped -- otherwise letting go immediately relaunches the mode.
-        #if defined(HAS_BUTTONS) && (C_BTN >= 0)
-            c_down = (digitalRead(C_BTN) == LOW);
+        #ifdef RIG_HAS_NAV
+            c_down = (RigInput::down(RigInput::SELECT));
             swallow_c_release = c_down;
         #endif
         c_press_start_ms = currentTime;
@@ -519,9 +531,9 @@ void RigUI::main(uint32_t currentTime) {
             // R button — the on-screen hint says "R: session". That press used
             // to be read by the legacy dispatcher, so bypassing it left Rig Mode
             // with no way to start collecting at all. Read it here instead.
-            #if defined(MARAUDER_CORE_MODE) && defined(HAS_BUTTONS) && (R_BTN >= 0)
+            #if defined(MARAUDER_CORE_MODE) && defined(RIG_HAS_RIGHT)
                 if (wifi_scan_obj.currentScanMode == WIFI_SCAN_WAR_DRIVE_CORE) {
-                    bool r = (digitalRead(R_BTN) == LOW);
+                    bool r = (RigInput::down(RigInput::RIGHT));
                     if (r && !nav_r_down) {
                         nav_r_down = true;
                         runSessionMenu();   // blocking modal, rig-styled

@@ -1,4 +1,5 @@
 #include "MenuFunctions.h"
+#include "RigInput.h"       // owns the one keyboard instance the ADV navigates with
 #include "RigUI.h"          // RigUI paints the menus; displayCurrentMenu defers to it
 #include "lang_var.h"
 #include "WardriveCore.h"   // Core-Mode Session-Steuerung (Header intern MARAUDER_CORE_MODE-guarded)
@@ -8,6 +9,7 @@
 extern const unsigned char menu_icons[][66];
 
 #include "GorillaMini.h"   // warroom-rig home-screen top-bar mascot (22x22 RGB565)
+#include "RigTheme.h"      // one palette and one set of measurements for both screens
 
 #ifdef HAS_MINI_SCREEN
 void MenuFunctions::drawMiniMenuButton(int b, int x, bool selected) {
@@ -1560,16 +1562,16 @@ void MenuFunctions::displaySetting(const char* key, Menu* menu, int index) {
   menu->list->set(index, node);
 }
 
-#if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
+#ifdef MARAUDER_CARDPUTER_ADV
 void MenuFunctions::updateKeyboard()
 {
-  M5CardputerKeyboard.updateKeyList();
-  M5CardputerKeyboard.updateKeysState();
+  RigInput::keyboard().updateKeyList();
+  RigInput::keyboard().updateKeysState();
 }
 
 bool MenuFunctions::isKeyPressed(char c)
 {
-  bool pressed = M5CardputerKeyboard.isKeyPressed(c);
+  bool pressed = RigInput::keyboard().isKeyPressed(c);
 
   if (pressed)
     delay(200);
@@ -1591,10 +1593,9 @@ void MenuFunctions::RunSetup()
 
   this->disable_touch = false;
 
-  #if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
-    M5CardputerKeyboard.begin();
-  #endif
-   
+  // The keyboard is brought up by RigInput::begin() in setup(), before this
+  // runs -- it is an input device, not a menu detail.
+
   // root menu stuff
   mainMenu.list = new LinkedList<MenuNode>(); // Get list in first menu ready
 
@@ -3047,13 +3048,16 @@ void MenuFunctions::RunSetup()
             #endif
           #endif
 
-          #if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
+          #ifdef MARAUDER_CARDPUTER_ADV
+            const char *ascii = RigInput::keyboard()._ascii_list;
             for (int i = 0; i < 95; i++) {
-              if ((M5CardputerKeyboard._ascii_list[i] != '(') &&
-                  (M5CardputerKeyboard._ascii_list[i] != '`')) {
-                if (this->isKeyPressed(M5CardputerKeyboard._ascii_list[i])) {
+              // '(' is not the character it looks like here: KEY_ENTER is 0x28,
+              // which is ASCII '('. Skipping it (and the esc key '`') keeps
+              // confirm and cancel out of the typed text.
+              if ((ascii[i] != '(') && (ascii[i] != '`')) {
+                if (this->isKeyPressed(ascii[i])) {
                   pressed = true;
-                  wifi_scan_obj.current_mini_kb_ssid.concat(M5CardputerKeyboard._ascii_list[i]);
+                  wifi_scan_obj.current_mini_kb_ssid.concat(ascii[i]);
                 }
                 if (this->isKeyPressed(KEY_BACKSPACE)) {
                   pressed = true;
@@ -3662,18 +3666,33 @@ void MenuFunctions::buildButtons(Menu *menu, int starting_index, const char* but
 void MenuFunctions::drawRigHeader(bool full)
 {
   auto &tft = display_obj.tft;
-  const uint16_t C_GOLD  = 0xEDA9, C_INK = 0xEF3B, C_DIM = 0x8C0E,
-                 C_DIM2  = 0x5AC9, C_BRONZE = STATUSBAR_COLOR, C_GREEN = 0x6E6D,
-                 C_AMBER = 0xFD20, C_RED = 0xD309;
+  // Palette from RigTheme rather than local copies. The greys here were private
+  // duplicates of the old 0x8C0E / 0x5AC9 and kept those unreadable values long
+  // after the shared ramp was corrected, because nobody knew this screen had
+  // its own set.
+  const uint16_t C_GOLD   = RigTheme::GOLD,  C_INK  = RigTheme::INK,
+                 C_DIM    = RigTheme::DIM,   C_DIM2 = RigTheme::DIM2,
+                 C_BRONZE = STATUSBAR_COLOR, C_GREEN = RigTheme::GREEN,
+                 C_AMBER  = RigTheme::AMBER, C_RED  = RigTheme::RED;
+
+  const int16_t bar_h  = RigTheme::BAR_H;
+  const int16_t stat_y = RigTheme::STATUS_Y + RigTheme::STATUS_H / 2;
 
   if (full) {
-    tft.fillRect(0, 0, TFT_WIDTH, 24, C_BRONZE);
-    tft.setSwapBytes(true);
-    tft.pushImage(3, 1, GORILLA_MINI_W, GORILLA_MINI_H, gorilla_mini);
-    tft.setSwapBytes(false);
+    tft.fillRect(0, 0, SCREEN_WIDTH, bar_h, C_BRONZE);
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(C_GOLD, C_BRONZE);
-    tft.drawString("WARROOM RIG", 30, 5, 2);
+    if (RigTheme::COMPACT) {
+      // The mascot is 22 px square and the compact bar is 16. A scaled-down
+      // 22x22 sprite reads as a smudge, so on the short screen the wordmark
+      // carries the identity alone.
+      tft.drawString("WARROOM RIG", 4, 4, 1);
+    } else {
+      tft.setSwapBytes(true);
+      tft.pushImage(3, 1, GORILLA_MINI_W, GORILLA_MINI_H, gorilla_mini);
+      tft.setSwapBytes(false);
+      tft.drawString("WARROOM RIG", 30, 5, 2);
+    }
   }
 
   // ---- battery: top-right of the bronze bar, refreshed on every call ----
@@ -3682,23 +3701,24 @@ void MenuFunctions::drawRigHeader(bool full)
   // readout (which lives on the boot splash).
   #ifdef HAS_BATTERY
     int8_t batt = battery_obj.battery_level;
-    tft.fillRect(152, 0, TFT_WIDTH - 152, 24, C_BRONZE);
+    tft.fillRect(152, 0, SCREEN_WIDTH - 152, bar_h, C_BRONZE);
     if (batt >= 0) {
       if (batt > 100) batt = 100;
       uint16_t bc = (batt >= 40) ? C_GREEN : (batt >= 20 ? C_AMBER : C_RED);
-      const int bx = 160, by = 6;
+      const int bx = 160, by = (bar_h - 11) / 2;
       tft.drawRoundRect(bx, by, 20, 11, 2, bc);                     // body
       tft.fillRect(bx + 20, by + 3, 2, 5, bc);                      // nub
       int fillw = (16 * batt) / 100;
       if (fillw > 0) tft.fillRect(bx + 2, by + 2, fillw, 7, bc);    // charge
       tft.setTextDatum(MR_DATUM);
       tft.setTextColor(bc, C_BRONZE);
-      tft.drawString(String((int)batt) + "%", TFT_WIDTH - 6, 11, 2);
+      tft.drawString(String((int)batt) + "%", SCREEN_WIDTH - 6, bar_h / 2,
+                     RigTheme::COMPACT ? 1 : 2);
     }
   #endif
 
   // ---- live status line (cleared + redrawn every refresh) ----
-  tft.fillRect(0, 24, TFT_WIDTH, 20, TFT_BLACK);
+  tft.fillRect(0, RigTheme::STATUS_Y, SCREEN_WIDTH, RigTheme::STATUS_H, TFT_BLACK);
 
   uint16_t dotc = C_DIM2, txtc = C_DIM;
   String gtxt = "NO GPS MODULE";
@@ -3712,16 +3732,16 @@ void MenuFunctions::drawRigHeader(bool full)
       }
     }
   #endif
-  tft.fillCircle(9, 34, 3, dotc);
+  tft.fillCircle(9, stat_y, 3, dotc);
   tft.setTextDatum(ML_DATUM);
   tft.setTextColor(txtc, TFT_BLACK);
-  tft.drawString(gtxt, 17, 34, 1);
+  tft.drawString(gtxt, 17, stat_y, 1);
 
   #ifdef HAS_SD
     bool sdok = sd_obj.supported;
     tft.setTextDatum(MR_DATUM);
     tft.setTextColor(sdok ? C_GREEN : C_RED, TFT_BLACK);
-    tft.drawString(sdok ? "SD OK" : "NO SD", TFT_WIDTH - 6, 34, 1);
+    tft.drawString(sdok ? "SD OK" : "NO SD", SCREEN_WIDTH - 6, stat_y, 1);
   #endif
 
   tft.setTextDatum(TL_DATUM);
@@ -3740,14 +3760,14 @@ void MenuFunctions::drawRigHome(int only)
 {
   auto &tft = display_obj.tft;
 
-  const uint16_t C_GOLD   = 0xEDA9;  // TFTGOLD
-  const uint16_t C_GOLDD  = 0x9BC6;  // dim gold (idle icons/chevrons)
-  const uint16_t C_INK    = 0xEF3B;  // warm off-white
-  const uint16_t C_DIM    = 0x8C0E;  // muted label
-  const uint16_t C_DIM2   = 0x5AC9;  // faint hint
-  const uint16_t C_PANEL  = 0x1081;  // idle card fill
-  const uint16_t C_PANEL2 = 0x18C2;  // selected card fill
-  const uint16_t C_PANEL3 = 0x2902;  // idle card outline
+  const uint16_t C_GOLD   = RigTheme::GOLD;
+  const uint16_t C_GOLDD  = RigTheme::GOLD_D;   // dim gold (idle icons/chevrons)
+  const uint16_t C_INK    = RigTheme::INK;
+  const uint16_t C_DIM    = RigTheme::DIM;      // muted label
+  const uint16_t C_DIM2   = RigTheme::DIM2;     // faint hint
+  const uint16_t C_PANEL  = RigTheme::PANEL;    // idle card fill
+  const uint16_t C_PANEL2 = RigTheme::PANEL_S;  // selected card fill
+  const uint16_t C_PANEL3 = RigTheme::OUTLINE;  // idle card outline
   const uint16_t sel = current_menu->selected;
 
   const char* titles[3] = { "RIG MODE", "UPLOAD", "FILE SERVER" };
@@ -3756,7 +3776,9 @@ void MenuFunctions::drawRigHome(int only)
                             "Config / download / AP" };
   const uint8_t cicons[3] = { WIFI, UPDATE, GENERAL_APPS };
 
-  const int cx = 8, cw = TFT_WIDTH - 16, chh = 68, y0 = 46, pitch = 78;
+  const int cx = 8, cw = SCREEN_WIDTH - 16;
+  const int chh = RigTheme::CARD_H, y0 = RigTheme::CARD_Y0,
+            pitch = RigTheme::CARD_PITCH;
 
   // Full paint (only < 0) clears the screen and draws the header; a partial
   // repaint (only >= 0) touches just one card/strip so U/D nav never flashes.
@@ -3771,24 +3793,34 @@ void MenuFunctions::drawRigHome(int only)
     int y = y0 + i * pitch;
     bool s = (sel == (uint16_t)i);
     uint16_t fill = s ? C_PANEL2 : C_PANEL;
-    tft.fillRoundRect(cx, y, cw, chh, 8, fill);
+    const int16_t r = RigTheme::RADIUS;
+    tft.fillRoundRect(cx, y, cw, chh, r, fill);
     if (s) {
-      tft.drawRoundRect(cx, y, cw, chh, 8, C_GOLD);
-      tft.drawRoundRect(cx + 1, y + 1, cw - 2, chh - 2, 7, C_GOLD);
-      tft.fillRect(cx + 6, y + 10, 4, chh - 20, C_GOLD);   // accent bar
+      tft.drawRoundRect(cx, y, cw, chh, r, C_GOLD);
+      tft.drawRoundRect(cx + 1, y + 1, cw - 2, chh - 2, r - 1, C_GOLD);
+      tft.fillRect(cx + 6, y + (RigTheme::COMPACT ? 4 : 10), 4,
+                   chh - (RigTheme::COMPACT ? 8 : 20), C_GOLD);   // accent bar
     } else {
-      tft.drawRoundRect(cx, y, cw, chh, 8, C_PANEL3);
+      tft.drawRoundRect(cx, y, cw, chh, r, C_PANEL3);
     }
     // icon glyph. Marauder XBitmaps carry the glyph in the 0-bits, the surround
     // in the 1-bits -> paint 1-bits in the card fill (blend away) and 0-bits in
     // the icon colour, so the symbol floats cleanly with no black box.
-    tft.drawXBitmap(20, y + (chh - ICON_H) / 2, menu_icons[cicons[i]],
+    tft.drawXBitmap(RigTheme::COMPACT ? 16 : 20, y + (chh - ICON_H) / 2,
+                    menu_icons[cicons[i]],
                     ICON_W, ICON_H, fill, s ? C_GOLD : C_GOLDD);
-    tft.setTextDatum(TL_DATUM);
     tft.setTextColor(s ? C_GOLD : C_INK, fill);
-    tft.drawString(titles[i], 52, y + 10, 4);
-    tft.setTextColor(C_DIM, fill);
-    tft.drawString(subs[i], 53, y + 44, 1);
+    if (RigTheme::SHOW_SUBS) {
+      tft.setTextDatum(TL_DATUM);
+      tft.drawString(titles[i], 52, y + 10, RigTheme::FONT_TITLE);
+      tft.setTextColor(C_DIM, fill);
+      tft.drawString(subs[i], 53, y + 44, 1);
+    } else {
+      // No room for a second line: the title takes the card's centre line and
+      // the subtitle is dropped rather than squeezed into an unreadable strip.
+      tft.setTextDatum(ML_DATUM);
+      tft.drawString(titles[i], 44, y + chh / 2, RigTheme::FONT_TITLE);
+    }
     uint16_t chev = s ? C_GOLD : C_DIM2;
     int ax = cx + cw - 16, ay = y + chh / 2;
     tft.fillTriangle(ax, ay - 6, ax, ay + 6, ax + 7, ay, chev);
@@ -3797,9 +3829,9 @@ void MenuFunctions::drawRigHome(int only)
   // ---- tools strip (selection index 3) ----
   if (only < 0 || only == 3) {
     bool st = (sel == 3);
-    const int ty = 294, th = TFT_HEIGHT - 294;  // 26px
-    tft.fillRect(0, ty, TFT_WIDTH, th, st ? C_PANEL2 : (uint16_t)TFT_BLACK);
-    tft.drawFastHLine(0, ty, TFT_WIDTH, st ? C_GOLD : C_PANEL3);
+    const int ty = RigTheme::TOOLS_Y, th = RigTheme::TOOLS_H;
+    tft.fillRect(0, ty, SCREEN_WIDTH, th, st ? C_PANEL2 : (uint16_t)TFT_BLACK);
+    tft.drawFastHLine(0, ty, SCREEN_WIDTH, st ? C_GOLD : C_PANEL3);
     tft.drawXBitmap(6, ty + (th - ICON_H) / 2, menu_icons[SCANNERS],
                     ICON_W, ICON_H, st ? C_PANEL2 : (uint16_t)TFT_BLACK, st ? C_GOLD : C_DIM);
     tft.setTextDatum(ML_DATUM);
@@ -3807,7 +3839,10 @@ void MenuFunctions::drawRigHome(int only)
     tft.drawString("TOOLS", 34, ty + th / 2, 2);
     tft.setTextDatum(MR_DATUM);
     tft.setTextColor(C_DIM2, st ? C_PANEL2 : (uint16_t)TFT_BLACK);
-    tft.drawString("WiFi / BT / GPS / System", TFT_WIDTH - 6, ty + th / 2, 1);
+    // The long form does not fit next to TOOLS on a 240 px line at this size
+    // once the compact layout shrinks everything around it.
+    tft.drawString(RigTheme::COMPACT ? "WiFi / BT / GPS" : "WiFi / BT / GPS / System",
+                   SCREEN_WIDTH - 6, ty + th / 2, 1);
   }
 
   tft.setTextDatum(TL_DATUM);  // restore library default
@@ -3819,13 +3854,17 @@ void MenuFunctions::drawRigHome(int only)
 // Tools strip (index 3). Returns the mainMenu node index, or -1 if the tap missed.
 int MenuFunctions::rigHomeHitTest(uint16_t x, uint16_t y)
 {
-  const int cx = 8, cw = TFT_WIDTH - 16, chh = 68, y0 = 46, pitch = 78;
+  // Geometry comes from RigTheme, the same source drawRigHome() paints from.
+  // These used to be a second copy of the numbers, which is a hit test that
+  // drifts away from the thing it is testing.
+  const int cx = 8, cw = SCREEN_WIDTH - 16;
   for (int i = 0; i < 3; i++) {
-    int cy = y0 + i * pitch;
-    if ((int)x >= cx && (int)x <= cx + cw && (int)y >= cy && (int)y <= cy + chh)
+    int cy = RigTheme::CARD_Y0 + i * RigTheme::CARD_PITCH;
+    if ((int)x >= cx && (int)x <= cx + cw &&
+        (int)y >= cy && (int)y <= cy + RigTheme::CARD_H)
       return i;
   }
-  if ((int)y >= 294)          // Tools strip spans the full width to the bottom edge
+  if ((int)y >= RigTheme::TOOLS_Y)   // strip spans the full width to the bottom
     return 3;
   return -1;
 }

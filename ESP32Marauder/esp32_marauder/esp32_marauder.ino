@@ -14,6 +14,8 @@ https://www.online-utility.org/image/convert/to/XBM
 
 #include <stdio.h>
 
+#include "RigInput.h"
+
 #ifdef HAS_GPS
   #include "GpsInterface.h"
 #endif
@@ -432,8 +434,13 @@ void setup()
     display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
   #endif
 
+  // Input comes up before anything can be asked to respond to it. On the
+  // Cardputer ADV this is what brings the TCA8418 keyboard onto the I2C bus;
+  // on the button boards it has nothing to do.
+  RigInput::begin();
+
   #ifdef HAS_SCREEN
-    #if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
+    #ifdef MARAUDER_CARDPUTER_ADV
       display_obj.clearScreen();
     #endif
     menu_function_obj.RunSetup();   // builds the menu tree (incl. the legacy tools)

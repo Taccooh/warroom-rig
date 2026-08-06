@@ -38,6 +38,7 @@
   // optionalem /fileserver.txt auf SD ueberschreibbar.
   //#define MARAUDER_FILE_SERVER_AP
 
+  //#define MARAUDER_CARDPUTER_ADV
   //#define MARAUDER_V8
   //#define DUAL_MINI_C5
   //// END BOARD TARGETS
@@ -64,7 +65,9 @@
   #define MODE_CUSTOM 4
 
   //// HARDWARE NAMES
-#if defined(MARAUDER_V7)
+#if defined(MARAUDER_CARDPUTER_ADV)
+    #define HARDWARE_NAME "M5 Cardputer ADV"
+#elif defined(MARAUDER_V7)
     #define HARDWARE_NAME "Marauder v7"
 #elif defined(MARAUDER_V7_1)
     #define HARDWARE_NAME "Marauder v7.1"
@@ -84,6 +87,35 @@
 #endif
 
 
+#if defined(MARAUDER_CARDPUTER_ADV)
+    //#define FLIPPER_ZERO_HAT
+    #define HAS_MINI_KB
+    #define HAS_BT
+    // HAS_BUTTONS is what the inherited code tests before compiling any input
+    // path, and the ADV does have one -- a keyboard. The pin numbers below are
+    // all -1 because there are no discrete buttons; RigInput is what turns that
+    // into working navigation.
+    #define HAS_BUTTONS
+    //#define HAS_PWR_MGMT
+    #define HAS_SCREEN
+    #define HAS_MINI_SCREEN
+    #define HAS_SD
+    #define USE_SD
+    #define HAS_TEMP_SENSOR
+    #define HAS_GPS
+    #define HAS_BATTERY
+    #define BATTERY_ADC_PIN 10
+    #define HAS_NEOPIXEL_LED
+
+    // Toolchain selectors, not hardware. This tree pins one arduino-cli, one
+    // ESP32 core (3.3.4, IDF 5.x) and one vendored NimBLE (2.x) for every
+    // target, so the modern API paths are the only ones that can compile.
+    // Upstream builds the Cardputer against an older core and therefore leaves
+    // these off; without them the ADV falls into the legacy branches and dies
+    // on esp_event_send_internal, tcpip_adapter_* and the NimBLE 1.x calls.
+    #define HAS_NIMBLE_2
+    #define HAS_IDF_3
+#endif
 
 
 #ifdef MARAUDER_V7
@@ -222,6 +254,25 @@
 #endif
 
 
+#if defined(MARAUDER_CARDPUTER_ADV)
+      #define L_BTN -1
+      #define C_BTN 0
+      #define U_BTN -1
+      #define R_BTN -1
+      #define D_BTN -1
+
+      //#define HAS_L
+      //#define HAS_R
+      //#define HAS_U
+      //#define HAS_D
+      #define HAS_C
+
+      #define L_PULL true
+      #define C_PULL true
+      #define U_PULL true
+      #define R_PULL true
+      #define D_PULL true
+#endif
 
 
 
@@ -238,6 +289,79 @@
 
 
 
+#if defined(MARAUDER_CARDPUTER_ADV)
+      #define CHAN_PER_PAGE 14
+
+      #define SCREEN_CHAR_WIDTH 40
+      //#define TFT_MISO -1
+      #define TFT_MOSI 35
+      #define TFT_SCLK 36
+      #define TFT_CS 37
+      #define TFT_DC 34
+      #define TFT_RST 33
+      #define TFT_BL 38
+      // #define TOUCH_CS -1
+
+      #define SCREEN_BUFFER
+
+      #define MAX_SCREEN_BUFFER 9
+
+      #define BANNER_TEXT_SIZE 1
+
+#ifndef TFT_WIDTH
+        #define TFT_WIDTH 135
+#endif
+
+#ifndef TFT_HEIGHT
+        #define TFT_HEIGHT 240
+#endif
+
+      #define EXT_BUTTON_WIDTH 0
+
+      #define SCREEN_ORIENTATION 1
+
+      #define CHAR_WIDTH 6
+      #define SCREEN_WIDTH TFT_HEIGHT // 240 in landscape
+      #define SCREEN_HEIGHT TFT_WIDTH // 135 in landscape
+      #define GRAPH_VERT_LIM SCREEN_HEIGHT/2 - 1
+      #define HEIGHT_1 TFT_WIDTH
+      #define WIDTH_1 TFT_WIDTH
+      #define STANDARD_FONT_CHAR_LIMIT (TFT_WIDTH/6) // number of characters on a single line with normal font
+      #define TEXT_HEIGHT (TFT_HEIGHT/10) // Height of text to be printed and scrolled
+      #define BOT_FIXED_AREA 0 // Number of lines in bottom fixed area (lines counted from bottom of screen)
+      #define TOP_FIXED_AREA 48 // Number of lines in top fixed area (lines counted from top of screen)
+      #define YMAX TFT_HEIGHT // Bottom of screen area
+      #define minimum(a,b)     (((a) < (b)) ? (a) : (b))
+      //#define MENU_FONT NULL
+      #define MENU_FONT &FreeMono9pt7b // Winner
+      //#define MENU_FONT &FreeMonoBold9pt7b
+      //#define MENU_FONT &FreeSans9pt7b
+      //#define MENU_FONT &FreeSansBold9pt7b
+      #define BUTTON_SCREEN_LIMIT 6
+      #define BUTTON_ARRAY_LEN 100
+      #define STATUS_BAR_WIDTH (SCREEN_HEIGHT/16)
+      #define LVGL_TICK_PERIOD 6
+    
+      #define FRAME_X 100
+      #define FRAME_Y 64
+      #define FRAME_W 120
+      #define FRAME_H 50
+    
+      // Red zone size
+      #define REDBUTTON_X FRAME_X
+      #define REDBUTTON_Y FRAME_Y
+      #define REDBUTTON_W (FRAME_W/2)
+      #define REDBUTTON_H FRAME_H
+    
+      // Green zone size
+      #define GREENBUTTON_X (REDBUTTON_X + REDBUTTON_W)
+      #define GREENBUTTON_Y FRAME_Y
+      #define GREENBUTTON_W (FRAME_W/2)
+      #define GREENBUTTON_H FRAME_H
+    
+      #define STATUSBAR_COLOR 0x5A44
+
+#endif
 
 
 
@@ -556,6 +680,23 @@
 
 
 
+#if defined(MARAUDER_CARDPUTER_ADV)
+    #define BANNER_TIME 50
+
+    #define COMMAND_PREFIX "!"
+
+    // Keypad start position, key sizes and spacing
+    #define KEY_X (SCREEN_WIDTH/2) // Centre of key
+    #define KEY_Y (TFT_HEIGHT/6)
+    #define KEY_W SCREEN_WIDTH // Width and height
+    #define KEY_H (TFT_HEIGHT/17)
+    #define KEY_SPACING_X 0 // X and Y gap
+    #define KEY_SPACING_Y 1
+    #define KEY_TEXTSIZE 1   // Font size multiplier
+    #define ICON_W 22
+    #define ICON_H 22
+    #define BUTTON_PADDING 7
+#endif
 
   //// END MENU DEFINITIONS
 
@@ -581,6 +722,13 @@
 
 
 
+#if defined(MARAUDER_CARDPUTER_ADV)
+      //#define SS      12
+      #define SD_CS   12
+      #define SD_SCK  40
+      #define SD_MISO 39
+      #define SD_MOSI 14
+#endif
 
 
 
@@ -657,7 +805,9 @@
 
   //// MEMORY LOWER LIMIT STUFF
   // These values are in bytes
-#if defined(MARAUDER_V7)
+#if defined(MARAUDER_CARDPUTER_ADV)
+    #define MEM_LOWER_LIM 10000
+#elif defined(MARAUDER_V7)
     #define MEM_LOWER_LIM 10000
 #elif defined(MARAUDER_V7_1)
     #define MEM_LOWER_LIM 10000
@@ -673,6 +823,8 @@
     
 #if defined(MARAUDER_V8)
       #define PIN 27
+#elif defined(MARAUDER_CARDPUTER_ADV)
+      #define PIN 21
 #else
       #define PIN 25
 #endif
@@ -708,6 +860,10 @@
       #define GPS_SERIAL_INDEX 2
       #define GPS_TX 21
       #define GPS_RX 22
+#elif defined(MARAUDER_CARDPUTER_ADV)
+      #define GPS_SERIAL_INDEX 1
+      #define GPS_TX 15
+      #define GPS_RX 13
 #elif defined(MARAUDER_V8)
       #define GPS_SERIAL_INDEX 1
       #define GPS_TX 14
@@ -905,28 +1061,32 @@
 // =========================================================================
 // warroom-rig: supported-hardware gate
 // =========================================================================
-// The board definitions for hardware this project does not build for are gone
-// from this file -- see the commit that removed them. This gate stays as the
-// backstop: it catches a build with no target selected at all, and it keeps the
-// promise explicit rather than implied by what happens to still be in the file.
+// This file described ESP32Marauder's whole hardware matrix -- 27 selectable
+// targets -- while the rig builds for four. The others compiled, booted, and
+// then behaved in ways nobody here had ever seen, which is worse than not
+// building at all: it looks like support. They are gone from this file now, so
+// the gate mostly catches the case of no target being defined.
 //
-// The Cardputer is why this exists. Its config set U/D/L/R_BTN to -1 (keyboard,
-// no D-pad) and no touch, so every input path in RigUI compiled out: the
-// firmware booted into the console and accepted nothing at all. Someone found
-// that config in this repo, reasonably assumed their board was supported, and
-// got exactly that.
+// The Cardputer is why the gate exists, and now also why it is not a wall.
+// Someone found the Marauder config in this repo, reasonably assumed their
+// board was supported, and got a console that accepted no input at all: the
+// Cardputer has no D-pad (U/D/L/R_BTN are -1) and no touch panel, so every
+// input path in RigUI compiled out. The answer was to build the missing path
+// rather than to keep saying no -- the ADV is a supported target, driven by
+// its keyboard.
 //
-// So: fail loudly here rather than quietly there. This is not a lock. If you
-// want to port the rig to another board, define WARROOM_RIG_ALLOW_UNTESTED_BOARD
-// and the build proceeds -- you just have to say out loud that you are on your
-// own. Porting means giving RigUI, WdgwarsUpload and WardriveCore an input path
-// that exists on your hardware; the scanning side is largely board-agnostic.
+// What a further port needs is the same thing: an input backend in RigInput
+// and a layout that survives the screen's aspect. The scanning, logging and
+// upload sides are board-agnostic. Define WARROOM_RIG_ALLOW_UNTESTED_BOARD to
+// build for something else and find out; the gate is here to stop accidents,
+// not to stop you.
 #if !defined(WARROOM_RIG_ALLOW_UNTESTED_BOARD)
-#if !defined(MARAUDER_V7) && !defined(MARAUDER_V7_1) && !defined(MARAUDER_V8)
-    #error "warroom-rig supports Marauder V7 / V7.1 / V8 only. This config file \
-is inherited from ESP32Marauder and lists many more boards, but the rig's UI and \
-input paths have only been built and tested on those three -- other targets can \
-boot with no working input at all. To port anyway, define \
-WARROOM_RIG_ALLOW_UNTESTED_BOARD. See README.md, section Hardware."
+#if !defined(MARAUDER_V7) && !defined(MARAUDER_V7_1) && !defined(MARAUDER_V8) && \
+    !defined(MARAUDER_CARDPUTER_ADV)
+    #error "warroom-rig supports Marauder V7 / V7.1 / V8 and the M5 Cardputer ADV. \
+No board target is defined, or the one defined is not one of those -- the rig's UI \
+and input paths exist only for those four, and other targets can boot with no \
+working input at all. To port anyway, define WARROOM_RIG_ALLOW_UNTESTED_BOARD. \
+See README.md, section Hardware."
 #endif
 #endif

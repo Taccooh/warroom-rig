@@ -1,5 +1,6 @@
 #include "FileServerAP.h"
 
+#include "RigInput.h"
 #ifdef MARAUDER_FILE_SERVER_AP
 
 #include <Arduino.h>
@@ -14,9 +15,9 @@
 #include "WiFiScan.h"
 extern WiFiScan wifi_scan_obj;
 
-// WdgwarsUpload-pattern: read C_BTN directly with digitalRead — `Switches`
-// keeps getButtonState() private and exposes only justPressed/justReleased,
-// neither of which fits the long-hold-exit shape.
+// Same pattern as WdgwarsUpload: ask RigInput for the button's current state.
+// `Switches` keeps getButtonState() private and exposes only justPressed /
+// justReleased, neither of which fits the long-hold-exit shape.
 
 extern Display display_obj;
 extern SDInterface sd_obj;
@@ -770,8 +771,8 @@ void FileServerAP::renderDisplay() {
 }
 
 void FileServerAP::handleCenterLongPressForExit() {
-    #if defined(HAS_BUTTONS) && (C_BTN >= 0)
-        bool pressed_now = (digitalRead(C_BTN) == LOW);
+    #ifdef RIG_HAS_NAV
+        bool pressed_now = (RigInput::down(RigInput::SELECT));
         uint32_t now = millis();
         if (pressed_now) {
             if (!center_was_pressed) {

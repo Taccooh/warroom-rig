@@ -30,12 +30,19 @@ ARDUINO_CLI=/path/to/arduino-cli
 LIBS=$(pwd)/libs
 LIB_ARGS=""; for d in $LIBS/Custom*/; do LIB_ARGS="$LIB_ARGS --library $d"; done
 $ARDUINO_CLI compile \
-  --fqbn "esp32:esp32:d32:PartitionScheme=min_spiffs" \
+  --fqbn "esp32:esp32:d32" \
   $LIB_ARGS \
+  --build-property "build.partitions=huge_app" \
+  --build-property "upload.maximum_size=3145728" \
   --build-property "compiler.cpp.extra_flags=-DMARAUDER_V7 -DMARAUDER_CORE_MODE -DMARAUDER_WDGWARS_UPLOAD -DMARAUDER_FILE_SERVER_AP" \
   --output-dir ./out \
   ESP32Marauder/esp32_marauder/esp32_marauder.ino
 ```
+
+`huge_app` (3 MB single app slot, no OTA) is passed as a build property because
+the d32 board does not list it in its partition menu. OTA was dropped
+deliberately; `SDInterface::runUpdate()` refuses to run when there is no second
+app partition, rather than overwriting the running one.
 
 **Assets:** `warroom-rig-core-vX.Y-merged.bin` (full 4 MB image, flash at `0x0`)
 and `warroom-rig-core-vX.Y-app.bin` (app partition only).
@@ -58,8 +65,8 @@ Key differences from the v7 build:
 - **Chip/FQBN:** `esp32:esp32:esp32c5`. `CDCOnBoot=cdc` is mandatory (else the
   USB-CDC console stays silent), same as the C5 node.
 - **Partition:** `huge_app` (3 MB app / 1 MB SPIFFS, **no OTA**). The image is
-  ~2.17 MB and does not fit `min_spiffs`; OTA is dropped because the rig is
-  USB-flashed. (v7 keeps `min_spiffs` + OTA.)
+  ~2.17 MB and does not fit `min_spiffs`. All three targets are on `huge_app`
+  now; OTA is dropped because the rig is USB-flashed.
 - **Bootloader offset is `0x2000`, not `0x1000`** — a C5 quirk. The merged image
   already places it correctly, so flashing `merged.bin` at `0x0` is safe.
 - Needs a TFT_eSPI that knows the C5: this repo's vendored copy is patched (route
@@ -82,6 +89,39 @@ python -m esptool --chip esp32c5 -p <PORT> -b 921600 \
   --before default-reset --after hard-reset \
   write-flash 0x0 out-v8/esp32_marauder.ino.merged.bin
 ```
+
+### M5Stack Cardputer ADV variant (ESP32-S3, keyboard)
+
+Same hub firmware for the Cardputer ADV. **Not tested on hardware** — see the
+Hardware section of `README.md` before shipping this to anyone.
+
+Key differences from the v7 build:
+- **Chip/FQBN:** `esp32:esp32:m5stack_cardputer`. The core has no ADV entry; the
+  plain Cardputer is the same ESP32-S3 family and the differences are menu
+  options (`PSRAM=enabled`).
+- **Screen:** 240×135 landscape instead of 240×320 portrait. `RigTheme` switches
+  to a compact profile below 200 px of height — smaller rows, one font step
+  down, card subtitles dropped. Panel driver and pins come from
+  `esp32_marauder/tft_setup.h`.
+- **Input:** the 56-key keyboard behind a TCA8418 I²C controller, not buttons.
+  `RigInput` maps the printed arrow cluster (`; . , /`), ENTER and ESC/BACKSPACE
+  onto the same six logical keys the button boards produce. The board's
+  `U/D/L/R_BTN` are all `-1`; that is expected and no longer means "no input".
+- **Toolchain flags:** the ADV config sets `HAS_NIMBLE_2` and `HAS_IDF_3` like
+  the other targets. Upstream builds the Cardputer against an older core and
+  leaves them off; without them the build falls into the legacy IDF/NimBLE
+  branches and fails.
+
+```bash
+$ARDUINO_CLI compile \
+  --fqbn "esp32:esp32:m5stack_cardputer:PartitionScheme=huge_app,PSRAM=enabled" \
+  $LIB_ARGS \
+  --build-property "compiler.cpp.extra_flags=-DMARAUDER_CARDPUTER_ADV -DMARAUDER_CORE_MODE -DMARAUDER_WDGWARS_UPLOAD -DMARAUDER_FILE_SERVER_AP" \
+  --output-dir ./out-adv \
+  ESP32Marauder/esp32_marauder/esp32_marauder.ino
+```
+
+Image is ~1.68 MB (53 % of the 3 MB app slot).
 
 ---
 

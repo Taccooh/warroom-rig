@@ -1,5 +1,8 @@
 #include "WdgwarsUpload.h"
+#include "RigTheme.h"       // screen-shape constants; this view still draws in the
+                            // old Marauder style, but it has to fit either panel
 
+#include "RigInput.h"
 #ifdef MARAUDER_WDGWARS_UPLOAD
 
 #include <Arduino.h>
@@ -49,6 +52,12 @@ static const char* WDG_BOUNDARY = "marauderboundary7f3a9c2e4b1d8f5a";
 // Larger = fewer TLS records but more transient RAM. 1 KB is the sweet
 // spot for ESP32 mbedtls (default record buffer ~4 KB).
 static const size_t UPLOAD_CHUNK_BYTES = 1024;
+
+// Top of our content: below Marauder's status bar and the "WDGWars Upload"
+// banner, both of which this view still leaves in place. 34 px is a quarter of
+// the Cardputer ADV's 135 px screen, and the bar itself is half as tall there
+// (STATUS_BAR_WIDTH is SCREEN_HEIGHT/16), so the offset follows the screen.
+static const int16_t WDG_TOP = RigTheme::COMPACT ? 20 : 34;
 
 // =========================================================================
 // Embedded root CAs — both issuer families Cloudflare fronts this host with
@@ -337,8 +346,8 @@ void WdgwarsUpload::runTick() {
 
     // Confirm-prompt path: short-press CENTER = confirm, long-press = cancel.
     if (waiting_for_confirm) {
-        #if defined(HAS_BUTTONS) && (C_BTN >= 0)
-            bool pressed_now = (digitalRead(C_BTN) == LOW);
+        #ifdef RIG_HAS_NAV
+            bool pressed_now = (RigInput::down(RigInput::SELECT));
             if (pressed_now) {
                 if (!center_was_pressed) {
                     center_was_pressed = true;
@@ -808,7 +817,7 @@ void WdgwarsUpload::renderDisplay() {
         // RunWdgwarsUpload draws at the top. A full clearScreen wiped the status
         // bar and then fought its redraw every tick -> flashing + overlap with the
         // GPS/sat line. Keeping our content in the area below fixes both.
-        const int16_t top = 34;
+        const int16_t top = WDG_TOP;
         const int16_t LH = 14;
         display_obj.tft.fillRect(0, top, display_obj.tft.width(),
                                  display_obj.tft.height() - top, TFT_BLACK);
@@ -963,7 +972,7 @@ void WdgwarsUpload::renderConfirmPrompt() {
 static uint8_t selVisibleRows() {
     #ifdef HAS_SCREEN
         // Rows between the banner (top=34, content from ~36) and the footer (~24px).
-        int rows = (display_obj.tft.height() - 34 - 26) / 12;
+        int rows = (display_obj.tft.height() - WDG_TOP - 26) / 12;
         if (rows < 1) rows = 1;
         if (rows > 32) rows = 32;
         return (uint8_t)rows;
@@ -976,7 +985,7 @@ void WdgwarsUpload::renderSelectList() {
     #ifdef HAS_SCREEN
         // Clear only below the framework banner (keep the top status bar) so the
         // top stays consistent from selection through upload — same as renderDisplay.
-        const int16_t top = 34;
+        const int16_t top = WDG_TOP;
         display_obj.tft.fillRect(0, top, display_obj.tft.width(),
                                  display_obj.tft.height() - top, TFT_BLACK);
         display_obj.tft.setTextSize(1);
@@ -1080,7 +1089,7 @@ static void wdgDrawButton(int x, int y, int w, int h, const char* label,
 
 void WdgwarsUpload::renderSelectListTouch() {
     #ifdef HAS_SCREEN
-        const int16_t top = 34;   // keep the framework status bar
+        const int16_t top = WDG_TOP;   // keep the framework status bar
         display_obj.tft.fillRect(0, top, display_obj.tft.width(),
                                  display_obj.tft.height() - top, TFT_BLACK);
 
@@ -1153,10 +1162,10 @@ void WdgwarsUpload::renderSelectListTouch() {
 // cannot fire mid-selection (which was making CENTER exit instead of toggling).
 // Returns having set state = CONNECTING_AP (user pressed GO) or after deinit().
 void WdgwarsUpload::runSelectionModal() {
-    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && (U_BTN >= 0) && (D_BTN >= 0)
+    #ifdef RIG_HAS_NAV
         // Wait for the button that opened this mode to be released, else it lands
         // as the first action inside the loop.
-        while (digitalRead(C_BTN) == LOW) delay(10);
+        while (RigInput::down(RigInput::SELECT)) delay(10);
         delay(60);
         renderSelectList();
 
@@ -1169,7 +1178,7 @@ void WdgwarsUpload::runSelectionModal() {
             bool changed = false;
 
             // CENTER: short tap = toggle current file; long-press = cancel & exit.
-            bool c_now = (digitalRead(C_BTN) == LOW);
+            bool c_now = (RigInput::down(RigInput::SELECT));
             if (c_now) {
                 if (!c_held) { c_held = true; c_start = now; }
                 else if ((now - c_start) >= WDGWARS_EXIT_HOLD_MS) {
@@ -1187,16 +1196,16 @@ void WdgwarsUpload::runSelectionModal() {
             }
 
             // UP / DOWN: move the cursor.
-            bool u = (digitalRead(U_BTN) == LOW);
+            bool u = (RigInput::down(RigInput::UP));
             if (u && !nav_u && sel_cursor > 0) { sel_cursor--; changed = true; }
             nav_u = u;
-            bool d = (digitalRead(D_BTN) == LOW);
+            bool d = (RigInput::down(RigInput::DOWN));
             if (d && !nav_d && sel_cursor + 1 < pending_count) { sel_cursor++; changed = true; }
             nav_d = d;
 
             // LEFT: select all / none.
-            #if (L_BTN >= 0)
-            bool l = (digitalRead(L_BTN) == LOW);
+            #ifdef RIG_HAS_LEFT
+            bool l = (RigInput::down(RigInput::LEFT));
             if (l && !nav_l) {
                 bool any_off = false;
                 for (uint8_t i = 0; i < pending_count; i++)
@@ -1208,8 +1217,8 @@ void WdgwarsUpload::runSelectionModal() {
             #endif
 
             // RIGHT: start uploading the selected files.
-            #if (R_BTN >= 0)
-            bool r = (digitalRead(R_BTN) == LOW);
+            #ifdef RIG_HAS_RIGHT
+            bool r = (RigInput::down(RigInput::RIGHT));
             if (r && !nav_r) {
                 uint8_t n = 0;
                 for (uint8_t i = 0; i < pending_count; i++) if (file_selected[i]) n++;
@@ -1297,8 +1306,8 @@ void WdgwarsUpload::runSelectionModal() {
 }
 
 void WdgwarsUpload::handleCenterLongPressForExit() {
-    #if defined(HAS_BUTTONS) && (C_BTN >= 0)
-        bool pressed_now = (digitalRead(C_BTN) == LOW);
+    #ifdef RIG_HAS_NAV
+        bool pressed_now = (RigInput::down(RigInput::SELECT));
         uint32_t now = millis();
         if (pressed_now) {
             if (!center_was_pressed) {

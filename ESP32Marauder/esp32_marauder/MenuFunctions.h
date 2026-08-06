@@ -5,7 +5,8 @@
 
 #include "configs.h"
 
-#if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
+#ifdef MARAUDER_CARDPUTER_ADV
+  #include "Keyboard.h"
 #endif
 
 #ifdef HAS_TOUCH
@@ -231,8 +232,11 @@ class MenuFunctions
     #endif
     //#endif
 
-    #if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
-      Keyboard_Class M5CardputerKeyboard = Keyboard_Class();
+    #ifdef MARAUDER_CARDPUTER_ADV
+      // The keyboard object lives in RigInput, not here. Reading an event
+      // drains it from the TCA8418's FIFO, so a second instance would eat half
+      // the keystrokes of the first -- and the rig's own screens poll the same
+      // keyboard for navigation. One owner, borrowed by everyone else.
       void updateKeyboard();
       bool isKeyPressed(char c);
     #endif

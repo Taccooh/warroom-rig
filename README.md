@@ -64,24 +64,45 @@ directly.
 
 ## Hardware
 
-**Marauder V7 / V7.1** (the daily driver) and **Marauder V8** (ESP32-C5, touch).
-That is the list.
+| Board | Screen | Input | Status |
+|---|---|---|---|
+| **Marauder V7 / V7.1** | 240×320 portrait | 5 buttons | daily driver, tested |
+| **Marauder V8** | 240×320 portrait | touch | builds, lightly used |
+| **M5Stack Cardputer ADV** | 240×135 landscape | keyboard (TCA8418) | **builds, never run on hardware** |
 
-`esp32_marauder/configs.h` is inherited from ESP32Marauder and still describes
-its full hardware matrix — 27 selectable targets, from the Cardputer to the CYD
-boards. **Finding your board in that file does not mean it is supported here.**
-The rig's console, file pickers and session control were written against the
-button layout of the V7 and the touch panel of the V8, so on other targets they
-range from awkward to inert: on a Cardputer, whose config has no D-pad
-(`U/D/L/R_BTN = -1`) and no touch panel, every input path compiles out and the
-firmware boots into a console that accepts nothing at all.
+That is the list. `configs.h` used to carry ESP32Marauder's whole 27-board
+matrix; the boards this project does not build for have been removed from it,
+so finding your board there now means something.
 
-Building for anything else therefore stops with a compile error rather than
-handing you an image that looks finished. If you want to port it, define
-`WARROOM_RIG_ALLOW_UNTESTED_BOARD` and the build proceeds — the gate is there to
-stop accidents, not to stop you. What a port actually needs is an input path for
-`RigUI`, `WdgwarsUpload` and `WardriveCore` that exists on your hardware; the
-scanning and logging sides are largely board-agnostic. Patches welcome.
+The Cardputer ADV is a port, not a tested target — nobody working on this repo
+owns one. It compiles, its geometry is checked arithmetically, and every input
+and layout path was written deliberately for it, but *no one has watched it
+boot*. Treat the first run as debugging, not as using. In particular the ST7789
+panel offsets in `tft_setup.h` are the generic TFT_eSPI ones for a 135×240
+display; if the image is shifted by a few pixels, that is the knob.
+
+Porting to a fourth board needs two things: an input backend in `RigInput`
+(`up/down/left/right/select/back`, plus "is it still held", which is the gesture
+that leaves a screen) and a panel entry in `tft_setup.h`. Layout follows from
+`SCREEN_WIDTH` / `SCREEN_HEIGHT` via `RigTheme`, which has a compact profile for
+short screens. Scanning, logging and upload are board-agnostic. Building for an
+unlisted board stops with a compile error; define
+`WARROOM_RIG_ALLOW_UNTESTED_BOARD` to proceed anyway — the gate is there to stop
+accidents, not to stop you.
+
+### One trap worth knowing about
+
+TFT_eSPI's driver headers define `TFT_WIDTH` / `TFT_HEIGHT` **without an
+`#ifndef` guard**, and arduino-cli compiles with `-w`, so the redefinition
+warning never prints. Any translation unit that reaches the library before
+`configs.h` therefore silently gets the driver's default panel size instead of
+the board's — which on the Cardputer meant two `.cpp` files laid out a 240×135
+screen as though it were 240×320, in a build that was green from end to end.
+
+Panel selection now lives in `esp32_marauder/tft_setup.h`, which TFT_eSPI reads
+before its own setup (`libs/CustomTFT_eSPI/User_Setup.h` is consequently dead —
+editing it does nothing). `RigTheme.h` carries a `static_assert` on the expected
+geometry so the failure can never be silent again.
 
 ## Build
 
@@ -90,8 +111,6 @@ Prerequisites:
 - arduino-cli 1.4.1
 - ESP32 core **3.3.4** (3.3.8 has multi-definition errors; local `platform.txt`
   carries the `-Wl,-zmuldefs` patch)
-- Handheld hub (LOLIN D32 / Marauder v7): FQBN
-  `esp32:esp32:d32:PartitionScheme=min_spiffs`
 
 Hub one-liner from this directory:
 
@@ -103,12 +122,28 @@ SRC=$(pwd)/ESP32Marauder/esp32_marauder/esp32_marauder.ino
 LIB_ARGS=""
 for d in $LIBS/Custom*/; do LIB_ARGS="$LIB_ARGS --library $d"; done
 
+MODULES="-DMARAUDER_CORE_MODE -DMARAUDER_WDGWARS_UPLOAD -DMARAUDER_FILE_SERVER_AP"
+
+# Marauder V7 (LOLIN D32). huge_app is passed as a build property because the
+# d32 board does not offer it in its partition menu.
 $ARDUINO_CLI compile \
-    --fqbn "esp32:esp32:d32:PartitionScheme=min_spiffs" \
+    --fqbn "esp32:esp32:d32" \
     $LIB_ARGS \
-    --build-property "compiler.cpp.extra_flags=-DMARAUDER_V7 -DMARAUDER_CORE_MODE -DMARAUDER_WDGWARS_UPLOAD -DMARAUDER_FILE_SERVER_AP" \
+    --build-property "build.partitions=huge_app" \
+    --build-property "upload.maximum_size=3145728" \
+    --build-property "compiler.cpp.extra_flags=-DMARAUDER_V7 $MODULES" \
     "$SRC"
 ```
+
+The other two targets differ only in FQBN and board define:
+
+| Target | FQBN | Define |
+|---|---|---|
+| Marauder V8 | `esp32:esp32:esp32c5:CDCOnBoot=cdc,PartitionScheme=huge_app,FlashSize=4M` | `-DMARAUDER_V8` |
+| Cardputer ADV | `esp32:esp32:m5stack_cardputer:PartitionScheme=huge_app,PSRAM=enabled` | `-DMARAUDER_CARDPUTER_ADV` |
+
+The ESP32 core has no separate Cardputer ADV entry; the plain Cardputer board is
+the same ESP32-S3 family and the differences (flash, PSRAM) are menu options.
 
 Append `--upload -p COM<N>` to flash. The build flags select the three modules;
 they are inherited from the Marauder-fork layout. The node build (C5-Zero /

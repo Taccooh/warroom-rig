@@ -10,6 +10,7 @@
 // Marauder integration: Phase 3, 2026-05-06.
 
 #include "WardriveCore.h"
+#include "RigInput.h"
 #include "RigTheme.h"
 
 #ifdef MARAUDER_CORE_MODE
@@ -55,7 +56,7 @@ extern Settings settings_obj;
 
 // Center-Button: Marauder-Switches-Wrapper.
 #ifdef HAS_BUTTONS
-  #if (C_BTN >= 0)
+  #ifdef RIG_HAS_NAV
     #include "Switches.h"
     extern Switches c_btn;
   #endif
@@ -1027,15 +1028,14 @@ void WardriveCore::runTick(uint32_t currentTime) {
 
     // 6) Center-Long-Press-Detection fuer Exit.
     #ifdef HAS_BUTTONS
-      #if (C_BTN >= 0)
-        // Marauders Switches-Wrapper hat keinen direkten "isHeld(ms)"-Check,
-        // wir tracken pressed/released selbst. `c_btn.justPressed()` ist
-        // edge-trigger; fuer hold-Detection koennten wir auch `c_btn.justReleased()`
-        // nutzen, aber wir wollen WAEHREND des Holds erkennen. Fallback:
-        // direkter `digitalRead(C_BTN)` mit invertierter Pull-Up-Logik.
-        // TODO: verify Switches-API — ob es eine "isPressed"-Polling-Methode
-        // gibt. Bis dahin: digitalRead-Fallback.
-        bool pressed_now = (digitalRead(C_BTN) == LOW); // active-low PULLUP
+      #ifdef RIG_HAS_NAV
+        // Marauders Switches-Wrapper ist edge-triggered (justPressed /
+        // justReleased) und kann "wird gerade gehalten" nicht beantworten —
+        // genau das brauchen wir aber, um WAEHREND des Holds zu reagieren
+        // statt erst beim Loslassen. Deshalb fragen wir den Zustand direkt ab.
+        // RigInput liefert ihn boardunabhaengig: Pin-Pegel auf den
+        // Tastenboards, gehaltene Taste auf der ADV-Tastatur.
+        bool pressed_now = RigInput::down(RigInput::SELECT);
         if (pressed_now) {
             if (!center_was_pressed) {
                 center_was_pressed = true;
@@ -1084,11 +1084,27 @@ static const uint16_t WC_PANEL3 = 0x2902;  // panel outline
 static const uint16_t WC_GREEN  = 0x6E6D;
 static const uint16_t WC_AMBER  = 0xFD20;
 
-// Layout, 240x320 portrait.
-static const int WC_HERO_Y   = 25;
-static const int WC_HERO_H   = 48;
-static const int WC_ROWS_Y   = 92;
-static const int WC_ROWS_END = 272;   // rows must stop before the touch bar (274)
+// Layout. Two screen shapes: 240x320 portrait (Marauder V7/V8) and 240x135
+// landscape (Cardputer ADV). Same width, so the columns below are shared; only
+// the vertical rhythm compresses, and the hero's big numbers step down from
+// text size 3 to 2 because 24 px of digits does not fit in a 34 px tile.
+static const int WC_BAR_H    = RigTheme::COMPACT ? 12 : 22;   // bronze header
+static const int WC_HERO_Y   = RigTheme::COMPACT ? 14 : 25;
+static const int WC_HERO_H   = RigTheme::COMPACT ? 34 : 48;
+// The three hero bands stack inside WC_HERO_H with no slack on the short
+// screen: 8 px of label, 16 px of value, 8 px of status in a 34 px tile.
+static const int WC_LBL_DY   = RigTheme::COMPACT ?  1 :  4;   // label y in hero
+static const int WC_VAL_DY   = RigTheme::COMPACT ?  9 : 12;   // big value y in hero
+static const int WC_SUB_DY   = RigTheme::COMPACT ? 25 : 37;   // status strip y
+static const int WC_HDR_Y    = RigTheme::COMPACT ? 52 : 78;   // column header text
+static const int WC_DIV_Y    = RigTheme::COMPACT ? 60 : 88;   // rule under it
+static const int WC_ROWS_Y   = RigTheme::COMPACT ? 63 : 92;
+// Rows must stop before the touch bar (274) on the tall screen, or before the
+// key hint on the short one.
+static const int WC_ROWS_END = RigTheme::COMPACT ? (SCREEN_HEIGHT - 12) : 272;
+static const int WC_HINT_Y   = RigTheme::COMPACT ? (SCREEN_HEIGHT -  9) : 306;
+static const uint8_t WC_BIG  = RigTheme::COMPACT ?  2 :  3;   // hero number size
+static const uint8_t WC_MID  = RigTheme::COMPACT ?  1 :  2;   // hero LINES size
 
 // Column origins, shared by the header labels and the rows so they can't drift.
 static const int WC_X_NODE = 12, WC_X_SLICE = 58, WC_X_LINES = 128;
@@ -1155,29 +1171,29 @@ void WardriveCore::drawCoreModeFrame() {
         display_obj.clearScreen();
 
         // Bronze header + wordmark (static; sats/battery are refreshed).
-        tft.fillRect(0, 0, TFT_WIDTH, 22, STATUSBAR_COLOR);
+        tft.fillRect(0, 0, SCREEN_WIDTH, WC_BAR_H, STATUSBAR_COLOR);
         tft.setTextSize(1);
         tft.setTextColor(WC_INK, STATUSBAR_COLOR);
-        tft.setCursor(6, 7);
+        tft.setCursor(6, (WC_BAR_H - 8) / 2);
         tft.print("WARROOM RIG");
 
         // Hero tile with a gold spine + the static metric labels.
-        tft.fillRoundRect(4, WC_HERO_Y, TFT_WIDTH - 8, WC_HERO_H, 4, WC_PANEL);
-        tft.drawRoundRect(4, WC_HERO_Y, TFT_WIDTH - 8, WC_HERO_H, 4, WC_PANEL3);
+        tft.fillRoundRect(4, WC_HERO_Y, SCREEN_WIDTH - 8, WC_HERO_H, 4, WC_PANEL);
+        tft.drawRoundRect(4, WC_HERO_Y, SCREEN_WIDTH - 8, WC_HERO_H, 4, WC_PANEL3);
         tft.fillRect(4, WC_HERO_Y + 2, 3, WC_HERO_H - 4, WC_GOLD);
         tft.setTextColor(WC_DIM, WC_PANEL);
-        tft.setCursor(14, WC_HERO_Y + 4);  tft.print("WIFI");
-        tft.setCursor(96, WC_HERO_Y + 4);  tft.print("BLE");
-        tft.setCursor(166, WC_HERO_Y + 4); tft.print("LINES");
+        tft.setCursor(14,  WC_HERO_Y + WC_LBL_DY); tft.print("WIFI");
+        tft.setCursor(96,  WC_HERO_Y + WC_LBL_DY); tft.print("BLE");
+        tft.setCursor(166, WC_HERO_Y + WC_LBL_DY); tft.print("LINES");
 
         // Column header for the node table.
         tft.setTextColor(WC_DIM2, TFT_BLACK);
-        tft.setCursor(10,         78); tft.print("NODE");
-        tft.setCursor(WC_X_SLICE, 78); tft.print("SLICE");
-        tft.setCursor(WC_X_LINES, 78); tft.print("LINES");
-        tft.setCursor(WC_X_RATE,  78); tft.print("RATE");
-        tft.setCursor(WC_X_SIG+2, 78); tft.print("SIG");
-        tft.drawFastHLine(4, 88, TFT_WIDTH - 8, WC_PANEL3);
+        tft.setCursor(10,         WC_HDR_Y); tft.print("NODE");
+        tft.setCursor(WC_X_SLICE, WC_HDR_Y); tft.print("SLICE");
+        tft.setCursor(WC_X_LINES, WC_HDR_Y); tft.print("LINES");
+        tft.setCursor(WC_X_RATE,  WC_HDR_Y); tft.print("RATE");
+        tft.setCursor(WC_X_SIG+2, WC_HDR_Y); tft.print("SIG");
+        tft.drawFastHLine(4, WC_DIV_Y, SCREEN_WIDTH - 8, WC_PANEL3);
 
         drawn_row_count = 0xFF;   // force a full row repaint on the next refresh
 
@@ -1185,8 +1201,8 @@ void WardriveCore::drawCoreModeFrame() {
             this->drawTouchControls();
         #else
             tft.setTextColor(WC_DIM2, TFT_BLACK);
-            tft.setCursor(6, 306);
-            tft.print("R: session   C hold: exit");
+            tft.setCursor(6, WC_HINT_Y);
+            tft.print(RIG_HINT_SESSION);
         #endif
     #endif
 }
@@ -1199,29 +1215,29 @@ void WardriveCore::refreshCoreDisplay() {
         drawRigBar();
 
         // ---- hero: WiFi / BLE are the headline pair, lines the third value ----
-        tft.setTextSize(3);
+        tft.setTextSize(WC_BIG);
         tft.setTextColor(collecting ? WC_GOLD : WC_DIM2, WC_PANEL);
         wcFmt(buf, sizeof(buf), total_rx_wifi);
-        tft.setCursor(14, WC_HERO_Y + 12); tft.printf("%-4s", buf);
+        tft.setCursor(14, WC_HERO_Y + WC_VAL_DY); tft.printf("%-4s", buf);
         wcFmt(buf, sizeof(buf), total_rx_ble);
-        tft.setCursor(96, WC_HERO_Y + 12); tft.printf("%-3s", buf);
+        tft.setCursor(96, WC_HERO_Y + WC_VAL_DY); tft.printf("%-3s", buf);
 
-        tft.setTextSize(2);
+        tft.setTextSize(WC_MID);
         tft.setTextColor(collecting ? WC_INK : WC_DIM2, WC_PANEL);
         wcFmt(buf, sizeof(buf), total_rx_lines);
-        tft.setCursor(166, WC_HERO_Y + 16); tft.printf("%-4s", buf);
+        tft.setCursor(166, WC_HERO_Y + WC_VAL_DY + 4); tft.printf("%-4s", buf);
 
         // Status strip along the bottom of the hero tile.
         tft.setTextSize(1);
         tft.setTextColor(collecting ? WC_GREEN : WC_AMBER, WC_PANEL);
-        tft.setCursor(14, WC_HERO_Y + 37);
+        tft.setCursor(14, WC_HERO_Y + WC_SUB_DY);
         tft.print(collecting ? "LIVE " : "LOBBY");
         tft.setTextColor(WC_DIM, WC_PANEL);
-        tft.setCursor(52, WC_HERO_Y + 37);
+        tft.setCursor(52, WC_HERO_Y + WC_SUB_DY);
         if (collecting) snprintf(buf, sizeof(buf), "%u/min   ", (unsigned)rate_lines_per_min);
         else            snprintf(buf, sizeof(buf), "idle     ");
         tft.print(buf);
-        tft.setCursor(116, WC_HERO_Y + 37);
+        tft.setCursor(116, WC_HERO_Y + WC_SUB_DY);
         snprintf(buf, sizeof(buf), "n %u/%u  ch %u   ",
                  (unsigned)getActiveNodeCount(),
                  (unsigned)WARDRIVE_CORE_MAX_NODES,
@@ -1235,12 +1251,23 @@ void WardriveCore::refreshCoreDisplay() {
         for (uint8_t i = 0; i < WARDRIVE_CORE_MAX_NODES; i++)
             if (node_table[i].flags & NODE_FLAG_ACTIVE) slots[n++] = i;
 
-        const int pitch = (n <= 6) ? 24 : 15;
-        const int rh    = pitch - 3;
+        const int pitch = RigTheme::COMPACT ? ((n <= 4) ? 14 : 12)
+                                            : ((n <= 6) ? 24 : 15);
+        const int rh    = pitch - (RigTheme::COMPACT ? 2 : 3);
+
+        // How many rows the table area can actually hold. On the tall screen
+        // this never bites (7 rows at the loose pitch, 12 at the tight one, for
+        // a fleet capped at WARDRIVE_CORE_MAX_NODES); on the short one it does,
+        // and a node that quietly is not drawn looks like a node that is not
+        // there. Whatever does not fit is counted out loud below the last row.
+        const uint8_t fits = (uint8_t)((WC_ROWS_END - WC_ROWS_Y) / pitch);
+        // When some rows have to be dropped, give up one more so the "+N more"
+        // line has a slot of its own instead of being written over the last row.
+        const uint8_t vis  = (n > fits) ? (uint8_t)(fits ? fits - 1 : 0) : n;
 
         // Relayout only when the fleet size (and thus the density) changes.
         if (n != drawn_row_count || pitch != drawn_pitch) {
-            tft.fillRect(0, WC_ROWS_Y, TFT_WIDTH, WC_ROWS_END - WC_ROWS_Y, TFT_BLACK);
+            tft.fillRect(0, WC_ROWS_Y, SCREEN_WIDTH, WC_ROWS_END - WC_ROWS_Y, TFT_BLACK);
             drawn_row_count = n;
             drawn_pitch     = pitch;
             for (uint8_t k = 0; k < WARDRIVE_CORE_MAX_NODES; k++) drawn_sig[k] = 0xFFFF;
@@ -1252,7 +1279,7 @@ void WardriveCore::refreshCoreDisplay() {
             }
         }
 
-        for (uint8_t k = 0; k < n; k++) {
+        for (uint8_t k = 0; k < vis; k++) {
             NodeRecord &nr = node_table[slots[k]];
             const int y  = WC_ROWS_Y + k * pitch;
             const int ty = y + (rh - 8) / 2;
@@ -1266,8 +1293,8 @@ void WardriveCore::refreshCoreDisplay() {
             const uint16_t sig = (uint16_t)(nr.mac_suffix ^ (stale ? 0x8000 : 0x0000));
             if (drawn_sig[k] != sig) {
                 drawn_sig[k] = sig;
-                if (rowbg != TFT_BLACK) tft.fillRoundRect(4, y, TFT_WIDTH - 8, rh, 3, rowbg);
-                else                    tft.fillRect(4, y, TFT_WIDTH - 8, rh, TFT_BLACK);
+                if (rowbg != TFT_BLACK) tft.fillRoundRect(4, y, SCREEN_WIDTH - 8, rh, 3, rowbg);
+                else                    tft.fillRect(4, y, SCREEN_WIDTH - 8, rh, TFT_BLACK);
                 tft.fillRect(4, y, 3, rh, col);
                 tft.setTextSize(1);
                 tft.setTextColor(WC_INK, rowbg);
@@ -1324,6 +1351,16 @@ void WardriveCore::refreshCoreDisplay() {
             if (nr.last_rssi) tft.printf("%-3d", (int)nr.last_rssi);
             else              tft.print("   ");
         }
+
+        // Nodes the table had no room for. They are still being logged -- this
+        // says so, rather than letting the screen imply the fleet is smaller
+        // than it is.
+        if (n > vis) {
+            tft.setTextSize(1);
+            tft.setTextColor(WC_DIM2, TFT_BLACK);
+            tft.setCursor(WC_X_NODE, WC_ROWS_Y + vis * pitch + 1);
+            tft.printf("+%u more", (unsigned)(n - vis));
+        }
     #endif
 }
 
@@ -1364,7 +1401,7 @@ static void tcDrawButton(int x, int y, int w, int h, const char* label,
 void WardriveCore::drawTouchControls() {
     #ifdef HAS_SCREEN
         // Clear the whole band first so a Live<->Lobby switch leaves no stale glyphs.
-        display_obj.tft.fillRect(0, TC_BAR_Y - 2, TFT_WIDTH, TC_BAR_H + 6, TFT_BLACK);
+        display_obj.tft.fillRect(0, TC_BAR_Y - 2, SCREEN_WIDTH, TC_BAR_H + 6, TFT_BLACK);
         tcDrawButton(TC_EXIT_X, TC_BAR_Y, TC_EXIT_W, TC_BAR_H, "EXIT",
                      TFT_DARKGREY, TFT_WHITE);
         if (collecting) {
