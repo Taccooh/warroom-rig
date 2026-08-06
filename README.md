@@ -62,6 +62,27 @@ single-node BLE-host election, and 2.4-GHz-only-node channel handling. For the
 stock node experience, use [Koko's upstream](https://github.com/justcallmekoko/ESP32DualBandWardriver)
 directly.
 
+## Hardware
+
+**Marauder V7 / V7.1** (the daily driver) and **Marauder V8** (ESP32-C5, touch).
+That is the list.
+
+`esp32_marauder/configs.h` is inherited from ESP32Marauder and still describes
+its full hardware matrix — 27 selectable targets, from the Cardputer to the CYD
+boards. **Finding your board in that file does not mean it is supported here.**
+The rig's console, file pickers and session control were written against the
+button layout of the V7 and the touch panel of the V8, so on other targets they
+range from awkward to inert: on a Cardputer, whose config has no D-pad
+(`U/D/L/R_BTN = -1`) and no touch panel, every input path compiles out and the
+firmware boots into a console that accepts nothing at all.
+
+Building for anything else therefore stops with a compile error rather than
+handing you an image that looks finished. If you want to port it, define
+`WARROOM_RIG_ALLOW_UNTESTED_BOARD` and the build proceeds — the gate is there to
+stop accidents, not to stop you. What a port actually needs is an input path for
+`RigUI`, `WdgwarsUpload` and `WardriveCore` that exists on your hardware; the
+scanning and logging sides are largely board-agnostic. Patches welcome.
+
 ## Build
 
 Prerequisites:

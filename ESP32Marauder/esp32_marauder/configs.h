@@ -3170,3 +3170,34 @@
   #endif
 
 #endif
+
+// =========================================================================
+// warroom-rig: supported-hardware gate
+// =========================================================================
+// This file is inherited from ESP32Marauder and still describes its whole
+// hardware matrix -- 27 selectable targets. warroom-rig is built and tested on
+// two of them. The rest compile, boot, and then behave in ways nobody here has
+// ever seen, which is worse than not building at all: it looks like support.
+//
+// The Cardputer is the clearest example and the reason this gate exists.
+// Its config sets U/D/L/R_BTN to -1 (keyboard, no D-pad) and no touch, so every
+// input path in RigUI compiles out. The firmware boots into the console and
+// then accepts nothing at all -- no navigation, and no way to start a session,
+// because the R-button handler is gated on R_BTN >= 0. Someone found the
+// Marauder config in this repo, reasonably assumed their board was supported,
+// and got that.
+//
+// So: fail loudly here rather than quietly there. This is not a lock. If you
+// want to port the rig to another board, define WARROOM_RIG_ALLOW_UNTESTED_BOARD
+// and the build proceeds -- you just have to say out loud that you are on your
+// own. Porting means giving RigUI, WdgwarsUpload and WardriveCore an input path
+// that exists on your hardware; the scanning side is largely board-agnostic.
+#if !defined(WARROOM_RIG_ALLOW_UNTESTED_BOARD)
+  #if !defined(MARAUDER_V7) && !defined(MARAUDER_V7_1) && !defined(MARAUDER_V8)
+    #error "warroom-rig supports Marauder V7 / V7.1 / V8 only. This config file \
+is inherited from ESP32Marauder and lists many more boards, but the rig's UI and \
+input paths have only been built and tested on those three -- other targets can \
+boot with no working input at all. To port anyway, define \
+WARROOM_RIG_ALLOW_UNTESTED_BOARD. See README.md, section Hardware."
+  #endif
+#endif
