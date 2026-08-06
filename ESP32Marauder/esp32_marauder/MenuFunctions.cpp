@@ -943,9 +943,6 @@ void MenuFunctions::main(uint32_t currentTime)
         //   U/D bewegen, C waehlen, R/L abbrechen. Optionen kontextabhaengig:
         //   Lobby      -> [Start Session]
         //   Collecting -> [Re-Sync | Stop Session]
-        else if (wifi_scan_obj.currentScanMode == WIFI_SCAN_WAR_DRIVE_CORE) {
-          this->runCoreSessionMenu();
-        }
         #endif
       }
       #endif
@@ -4006,85 +4003,3 @@ void MenuFunctions::displayCurrentMenu(int start_index)
 #endif
 
 #endif
-
-
-
-
-
-// =========================================================================
-// Rig Mode session menu (R button)
-// =========================================================================
-// Extracted from main() so RigUI can open it directly. It is Rig Mode's own
-// control surface -- start / stop / re-sync a collection session -- and the
-// only reason it lived inside the legacy dispatcher was that the dispatcher
-// used to own every button press. RigUI drives our run-views now, so it calls
-// this itself; the branch in main() still calls the same code for any path
-// that reaches it the old way, so there is one implementation, not two.
-//
-// Blocking by design: it owns the buttons for its whole duration, exactly like
-// the Core Mode and Upload pick lists, so no other handler can see the presses
-// meant for it.
-void MenuFunctions::runCoreSessionMenu() {
-  #ifdef MARAUDER_CORE_MODE
-          // Oeffnungs-Druck von R sauber abwarten, sonst schlaegt er sofort als
-          // Cancel im Menue durch.
-          while (!r_btn.justReleased()) { r_btn.justPressed(); delay(10); }
-
-          bool live = wardrive_core_obj.isCollecting();
-          const char* opts[3];
-          int nopts;
-          if (live) { opts[0] = "Re-Sync"; opts[1] = "Stop Session"; opts[2] = "Cancel"; nopts = 3; }
-          else      { opts[0] = "Start Session"; opts[1] = "Cancel"; nopts = 2; }
-
-          const int bx = 18, by = 88, bw = 204, bh = 112;
-          int  sel = 0;
-          bool done = false, chosen = false, dirty = true;
-
-          while (!done) {
-            if (dirty) {
-              display_obj.tft.fillRect(bx, by, bw, bh, TFT_BLACK);
-              display_obj.tft.drawRect(bx, by, bw, bh, TFT_CYAN);
-              display_obj.tft.setTextSize(2);
-              display_obj.tft.setTextColor(TFT_CYAN, TFT_BLACK);
-              display_obj.tft.setCursor(bx + 8, by + 6);
-              display_obj.tft.print("Session");
-              display_obj.tft.setTextSize(1);
-              for (int i = 0; i < nopts; i++) {
-                bool s = (i == sel);
-                display_obj.tft.setTextColor(s ? TFT_BLACK : TFT_WHITE,
-                                             s ? TFT_GREEN : TFT_BLACK);
-                display_obj.tft.setCursor(bx + 10, by + 38 + i * 20);
-                display_obj.tft.printf(" %-16s", opts[i]);
-              }
-              dirty = false;
-            }
-            if (u_btn.justPressed()) { sel = (sel + nopts - 1) % nopts; dirty = true; }
-            if (d_btn.justPressed()) { sel = (sel + 1) % nopts; dirty = true; }
-            if (l_btn.justPressed() || r_btn.justPressed()) { done = true; }   // cancel
-            if (c_btn.justPressed()) { chosen = true; done = true; }
-            delay(15);
-          }
-
-          const char* flash = nullptr;
-          if (chosen) {
-            if (live) {
-              if      (sel == 0) { wardrive_core_obj.resyncSession(); flash = "RE-SYNC"; }
-              else if (sel == 1) { wardrive_core_obj.stopSession();   flash = "STOPPED"; }
-            } else {
-              if      (sel == 0) { wardrive_core_obj.startSession();  flash = "STARTED"; }
-            }
-          }
-
-          // Menuebox weg. Kurzes Bestaetigungs-Flash; die dynamischen Felder
-          // malt refreshCoreDisplay beim naechsten Tick (<=500ms) neu.
-          display_obj.tft.fillRect(bx, by, bw, bh, TFT_BLACK);
-          if (flash) {
-            display_obj.tft.setTextSize(3);
-            display_obj.tft.setTextColor(TFT_GREEN, TFT_BLACK);
-            display_obj.tft.setCursor(bx + 12, by + 42);
-            display_obj.tft.print(flash);
-            delay(650);
-            display_obj.tft.fillRect(bx, by, bw, bh, TFT_BLACK);
-          }
-  #endif
-}

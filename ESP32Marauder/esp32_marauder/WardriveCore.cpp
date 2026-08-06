@@ -55,7 +55,7 @@ extern Settings settings_obj;
 
 // Center-Button: Marauder-Switches-Wrapper.
 #ifdef HAS_BUTTONS
-  #if (C_BTN >= 0) && !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+  #if (C_BTN >= 0)
     #include "Switches.h"
     extern Switches c_btn;
   #endif
@@ -1027,7 +1027,7 @@ void WardriveCore::runTick(uint32_t currentTime) {
 
     // 6) Center-Long-Press-Detection fuer Exit.
     #ifdef HAS_BUTTONS
-      #if (C_BTN >= 0) && !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+      #if (C_BTN >= 0)
         // Marauders Switches-Wrapper hat keinen direkten "isHeld(ms)"-Check,
         // wir tracken pressed/released selbst. `c_btn.justPressed()` ist
         // edge-trigger; fuer hold-Detection koennten wir auch `c_btn.justReleased()`

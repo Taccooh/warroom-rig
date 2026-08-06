@@ -337,8 +337,7 @@ void WdgwarsUpload::runTick() {
 
     // Confirm-prompt path: short-press CENTER = confirm, long-press = cancel.
     if (waiting_for_confirm) {
-        #if defined(HAS_BUTTONS) && (C_BTN >= 0) && \
-            !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+        #if defined(HAS_BUTTONS) && (C_BTN >= 0)
             bool pressed_now = (digitalRead(C_BTN) == LOW);
             if (pressed_now) {
                 if (!center_was_pressed) {
@@ -1154,8 +1153,7 @@ void WdgwarsUpload::renderSelectListTouch() {
 // cannot fire mid-selection (which was making CENTER exit instead of toggling).
 // Returns having set state = CONNECTING_AP (user pressed GO) or after deinit().
 void WdgwarsUpload::runSelectionModal() {
-    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && (U_BTN >= 0) && (D_BTN >= 0) && \
-        !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && (U_BTN >= 0) && (D_BTN >= 0)
         // Wait for the button that opened this mode to be released, else it lands
         // as the first action inside the loop.
         while (digitalRead(C_BTN) == LOW) delay(10);
@@ -1299,8 +1297,7 @@ void WdgwarsUpload::runSelectionModal() {
 }
 
 void WdgwarsUpload::handleCenterLongPressForExit() {
-    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && \
-        !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+    #if defined(HAS_BUTTONS) && (C_BTN >= 0)
         bool pressed_now = (digitalRead(C_BTN) == LOW);
         uint32_t now = millis();
         if (pressed_now) {

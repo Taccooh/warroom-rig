@@ -6,7 +6,6 @@
 #include "configs.h"
 
 #if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
-  #include "Keyboard.h"
 #endif
 
 #ifdef HAS_TOUCH
@@ -247,7 +246,6 @@ class MenuFunctions
     void drawRigHeader(bool full);     // warroom-rig home header: mascot/wordmark (full) + honest live GPS/SD line
     Menu* getMainMenu()  { return &mainMenu; }
     Menu* getToolsMenu() { return &toolsMenu; }
-    void runCoreSessionMenu();   // Rig Mode's start/stop/re-sync modal (R button)
     #ifdef HAS_TOUCH
       int rigHomeHitTest(uint16_t x, uint16_t y);  // map a tap to a home-console card index (touch boards, e.g. V8); -1 if missed
     #endif

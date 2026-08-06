@@ -106,8 +106,7 @@ void RigUI::handleHomeInput(uint32_t currentTime) {
     #endif
 
     // ---- Button boards (Marauder V7) ---------------------------------------
-    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && (U_BTN >= 0) && (D_BTN >= 0) && \
-        !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && (U_BTN >= 0) && (D_BTN >= 0)
 
         // UP / DOWN — move the highlight. Only the two affected entries are
         // repainted, so navigating does not flash the whole console.
@@ -159,8 +158,7 @@ void RigUI::handleHomeInput(uint32_t currentTime) {
 // Core Mode and Upload pick lists, so nothing else can see the presses meant
 // for it.
 void RigUI::runSessionMenu() {
-    #if defined(MARAUDER_CORE_MODE) && defined(HAS_BUTTONS) && (C_BTN >= 0) && \
-        !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+    #if defined(MARAUDER_CORE_MODE) && defined(HAS_BUTTONS) && (C_BTN >= 0)
 
     auto& tft = display_obj.tft;
 
@@ -380,8 +378,7 @@ void RigUI::enterMenu() {
 }
 
 void RigUI::handleMenuInput(uint32_t currentTime) {
-    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && (U_BTN >= 0) && (D_BTN >= 0) && \
-        !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && (U_BTN >= 0) && (D_BTN >= 0)
 
         Menu* m = menu_function_obj.current_menu;
         if (!m || !m->list) return;
@@ -494,8 +491,7 @@ void RigUI::main(uint32_t currentTime) {
         // The exit gesture is a CENTER hold, so the button is still down right
         // now. Adopt that as an in-progress press and mark its release to be
         // dropped -- otherwise letting go immediately relaunches the mode.
-        #if defined(HAS_BUTTONS) && (C_BTN >= 0) && \
-            !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+        #if defined(HAS_BUTTONS) && (C_BTN >= 0)
             c_down = (digitalRead(C_BTN) == LOW);
             swallow_c_release = c_down;
         #endif
@@ -523,8 +519,7 @@ void RigUI::main(uint32_t currentTime) {
             // R button — the on-screen hint says "R: session". That press used
             // to be read by the legacy dispatcher, so bypassing it left Rig Mode
             // with no way to start collecting at all. Read it here instead.
-            #if defined(MARAUDER_CORE_MODE) && defined(HAS_BUTTONS) && (R_BTN >= 0) && \
-                !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+            #if defined(MARAUDER_CORE_MODE) && defined(HAS_BUTTONS) && (R_BTN >= 0)
                 if (wifi_scan_obj.currentScanMode == WIFI_SCAN_WAR_DRIVE_CORE) {
                     bool r = (digitalRead(R_BTN) == LOW);
                     if (r && !nav_r_down) {

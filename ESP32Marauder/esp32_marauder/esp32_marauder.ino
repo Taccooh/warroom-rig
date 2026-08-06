@@ -40,7 +40,6 @@ https://www.online-utility.org/image/convert/to/XBM
 #elif defined(XIAO_ESP32_S3)
   #include "xiaoLED.h"
 #elif defined(MARAUDER_M5STICKC) || defined(MARAUDER_M5STICKCP2)
-  #include "stickcLED.h"
 #elif defined(HAS_NEOPIXEL_LED)
   #include "LedInterface.h"
 #endif

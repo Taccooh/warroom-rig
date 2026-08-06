@@ -49,3 +49,7 @@ desktop.ini
 *.log
 *.tmp
 *.bak
+
+# arduino-cli --output-dir targets used by RELEASING.md
+out/
+out-*/

@@ -770,8 +770,7 @@ void FileServerAP::renderDisplay() {
 }
 
 void FileServerAP::handleCenterLongPressForExit() {
-    #if defined(HAS_BUTTONS) && (C_BTN >= 0) && \
-        !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
+    #if defined(HAS_BUTTONS) && (C_BTN >= 0)
         bool pressed_now = (digitalRead(C_BTN) == LOW);
         uint32_t now = millis();
         if (pressed_now) {
