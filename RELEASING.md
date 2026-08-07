@@ -143,8 +143,54 @@ the stock firmware, use Koko's upstream directly. Two node targets share
 - **NodeMCU-32** (`-DNODEMCU32_NODE`) — standard ESP32, FQBN
   `esp32:esp32:nodemcu-32s`. Not prebuilt; build from source if needed.
 
-**Assets:** `warroom-rig-node-c5zero-v<...>.bin` (C5-Zero app image). Flash via
-the bundled `c5_flasher.py` (handles bootloader + partitions + app for the C5).
+### Node assets and how they get flashed
+
+Ship the same pair the core track ships, plus checksums:
+
+| Asset | What it is |
+|---|---|
+| `warroom-rig-node-c5zero-v<...>-merged.bin` | **the one to hand people** — bootloader + partition table + app in one file, flashed at `0x0` |
+| `warroom-rig-node-c5zero-v<...>-app.bin` | app only, `0x10000`, for re-flashing a node that already runs this firmware |
+| `SHA256SUMS.txt` | both of the above |
+
+The app image on its own is **not bootable on a fresh C5**. It needs a
+bootloader and a partition table that the release did not carry, at offsets
+nobody guesses:
+
+```
+0x2000   bootloader.bin      <- 0x2000, not 0x1000. A C5 quirk.
+0x8000   partitions.bin
+0x10000  <app>.bin
+```
+
+Those two live in `ESP32DualBandWardriver/C5_Py_Flasher_c5zero/bins/`. Build the
+merged asset from them rather than from a fresh compile, so the release ships
+the binaries that were actually tested in the field:
+
+```bash
+cd ESP32DualBandWardriver/C5_Py_Flasher_c5zero/bins
+python -m esptool --chip esp32c5 merge-bin \
+  -o warroom-rig-node-c5zero-v<...>-merged.bin \
+  0x2000 bootloader.bin 0x8000 partitions.bin 0x10000 <app>.bin
+```
+
+Three ways to get it onto a node, in the order to try them:
+
+1. **Merged image, any esptool.** One file, one offset, no assumptions about
+   what is already on the chip.
+   ```bash
+   python -m esptool --chip esp32c5 -p <PORT> write-flash 0x0 <...>-merged.bin
+   ```
+2. **Browser** — esptool-js or esp.huhn.me, same file at `0x0`. Needs Chrome or
+   Edge (WebSerial), and needs the tool's bundled esptool-js to know the
+   ESP32-C5; the chip is new enough that older builds fail at detection, before
+   offsets matter. You find out at "Connect".
+3. **`c5_flasher.py`** in the repo — the field-proven path, and the fallback
+   when the browser route cannot see the chip.
+
+The C5-Zero's USB is the chip's own USB-JTAG on GPIO13/14 with no bridge in
+between, so a vanished serial port is a firmware symptom, not a cable one: hold
+BOOT while plugging in to force ROM download mode, which always accepts a flash.
 
 **Attribution (required + fair):** the node is ~93% Koko's MIT code. Every node
 release MUST credit **Just Call Me Koko** and link the upstream
