@@ -274,10 +274,12 @@ void RigUI::runSessionMenu() {
         delay(600);
     }
 
-    // Hand the screen back: refreshCoreDisplay repaints on its next tick, and
-    // clearing here avoids the modal outline surviving underneath it.
+    // Hand the screen back, fully. This used to clear the screen and trust the
+    // next refresh tick to redraw -- but that tick only rewrites the values, so
+    // the console came back with its frame missing and stayed that way until
+    // Core Mode was closed and reopened.
     tft.setTextDatum(TL_DATUM);
-    display_obj.clearScreen();
+    wardrive_core_obj.redrawScreen();
     #endif
 }
 

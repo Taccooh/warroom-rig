@@ -78,17 +78,17 @@ The Cardputer ADV is a port, not a tested target — nobody working on this repo
 owns one. It compiles, its geometry is checked arithmetically, and every input
 and layout path was written deliberately for it, but *no one has watched it
 boot*. Treat the first run as debugging, not as using. In particular the ST7789
-panel offsets in `tft_setup.h` are the generic TFT_eSPI ones for a 135×240
-display; if the image is shifted by a few pixels, that is the knob.
+panel offsets are TFT_eSPI's generic ones for a 135×240 display; if the image is
+shifted by a few pixels, that is the knob.
 
 Porting to a fourth board needs two things: an input backend in `RigInput`
 (`up/down/left/right/select/back`, plus "is it still held", which is the gesture
-that leaves a screen) and a panel entry in `tft_setup.h`. Layout follows from
-`SCREEN_WIDTH` / `SCREEN_HEIGHT` via `RigTheme`, which has a compact profile for
-short screens. Scanning, logging and upload are board-agnostic. Building for an
-unlisted board stops with a compile error; define
-`WARROOM_RIG_ALLOW_UNTESTED_BOARD` to proceed anyway — the gate is there to stop
-accidents, not to stop you.
+that leaves a screen) and a set of panel macros in that target's build flags.
+Layout follows from `SCREEN_WIDTH` / `SCREEN_HEIGHT` via `RigTheme`, which has a
+compact profile for short screens. Scanning, logging and upload are
+board-agnostic. Building for an unlisted board stops with a compile error;
+define `WARROOM_RIG_ALLOW_UNTESTED_BOARD` to proceed anyway — the gate is there
+to stop accidents, not to stop you.
 
 ### One trap worth knowing about
 
@@ -99,10 +99,19 @@ warning never prints. Any translation unit that reaches the library before
 the board's — which on the Cardputer meant two `.cpp` files laid out a 240×135
 screen as though it were 240×320, in a build that was green from end to end.
 
-Panel selection now lives in `esp32_marauder/tft_setup.h`, which TFT_eSPI reads
-before its own setup (`libs/CustomTFT_eSPI/User_Setup.h` is consequently dead —
-editing it does nothing). `RigTheme.h` carries a `static_assert` on the expected
-geometry so the failure can never be silent again.
+The Marauder targets get their panel from `libs/CustomTFT_eSPI/User_Setup.h`,
+which is the library's own mechanism and is left alone. The Cardputer needs a
+different panel, and it takes it from **build flags** (see RELEASING.md) rather
+than from a `tft_setup.h` in the sketch: TFT_eSPI reads such a file before its
+own setup and then considers the configuration finished *for every target*, so a
+file added for one board silently reconfigures the others. That is not
+hypothetical — it was tried here and it blanked the V7's display while changing
+nothing about its values. Build flags are per-target, land before any header is
+parsed, and reach the library's own translation unit (`platform.txt` has a
+single `recipe.cpp.o.pattern`, and it carries `compiler.cpp.extra_flags`).
+
+`RigTheme.h` carries a `static_assert` on the expected geometry, so a panel size
+that gets overridden fails the build instead of shipping a wrong-looking screen.
 
 ## Build
 
@@ -135,15 +144,18 @@ $ARDUINO_CLI compile \
     "$SRC"
 ```
 
-The other two targets differ only in FQBN and board define:
+The V8 differs only in FQBN and board define:
 
-| Target | FQBN | Define |
-|---|---|---|
-| Marauder V8 | `esp32:esp32:esp32c5:CDCOnBoot=cdc,PartitionScheme=huge_app,FlashSize=4M` | `-DMARAUDER_V8` |
-| Cardputer ADV | `esp32:esp32:m5stack_cardputer:PartitionScheme=huge_app,PSRAM=enabled` | `-DMARAUDER_CARDPUTER_ADV` |
+```
+--fqbn "esp32:esp32:esp32c5:CDCOnBoot=cdc,PartitionScheme=huge_app,FlashSize=4M"
+--build-property "compiler.cpp.extra_flags=-DMARAUDER_V8 $MODULES"
+```
 
-The ESP32 core has no separate Cardputer ADV entry; the plain Cardputer board is
-the same ESP32-S3 family and the differences (flash, PSRAM) are menu options.
+The Cardputer ADV additionally carries its panel configuration in the flags,
+because its screen is not the one `User_Setup.h` describes — see
+[RELEASING.md](RELEASING.md) for the full command. The ESP32 core has no
+separate ADV entry; the plain Cardputer board is the same ESP32-S3 family and
+the differences are menu options.
 
 Append `--upload -p COM<N>` to flash. The build flags select the three modules;
 they are inherited from the Marauder-fork layout. The node build (C5-Zero /

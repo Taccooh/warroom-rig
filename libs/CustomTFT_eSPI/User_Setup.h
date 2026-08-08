@@ -1,9 +1,3 @@
-// NOTE (warroom-rig): this file is no longer read. The sketch provides
-// ESP32Marauder/esp32_marauder/tft_setup.h, which TFT_eSPI picks up first and
-// which then suppresses this one -- verified by putting an #error here and
-// watching the build succeed. Panel driver and pins are chosen per board there.
-// Editing this file has no effect.
-
 //                            USER DEFINED SETTINGS
 //   Set driver type, fonts to be loaded, pins used and SPI control method etc
 //

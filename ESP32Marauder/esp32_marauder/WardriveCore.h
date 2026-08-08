@@ -113,6 +113,18 @@ public:
 
     bool isRunning() const { return is_running; }
 
+    // Repaint the whole Core Mode screen after something else has drawn over it
+    // -- the session modal covers it and has to hand it back intact.
+    //
+    // Clearing the screen and waiting for the next refresh does not do that:
+    // refreshCoreDisplay() only rewrites the values, because the frame around
+    // them (bronze bar, hero tile, column headers, key hint) is painted once on
+    // entry and then left alone. Clearing without repainting the frame leaves
+    // numbers floating on a black screen with half the console missing, and no
+    // periodic tick ever brings it back -- only leaving and re-entering
+    // Core Mode does.
+    void redrawScreen();
+
     // ---- Barrier-Session-Steuerung (aus dem Marauder-UI aufgerufen) ----
     // Der CORE startet in der LOBBY: er registriert Nodes + weist Kanaele zu,
     // aber die Nodes bleiben idle bis startSession() SESSION_CMD_START

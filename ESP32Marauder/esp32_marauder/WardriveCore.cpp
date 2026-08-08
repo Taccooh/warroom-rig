@@ -1165,6 +1165,16 @@ void WardriveCore::drawRigBar() {
     #endif
 }
 
+void WardriveCore::redrawScreen() {
+    #ifdef HAS_SCREEN
+        // drawCoreModeFrame() clears the screen itself and sets drawn_row_count
+        // to 0xFF, which makes the following refresh repaint every node row
+        // rather than only the ones whose values happen to have changed.
+        drawCoreModeFrame();
+        refreshCoreDisplay();
+    #endif
+}
+
 void WardriveCore::drawCoreModeFrame() {
     #ifdef HAS_SCREEN
         auto &tft = display_obj.tft;

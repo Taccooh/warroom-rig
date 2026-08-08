@@ -72,12 +72,13 @@ namespace RigTheme {
     // like this one says a word.
 #if defined(MARAUDER_CARDPUTER_ADV)
     static_assert(SCREEN_WIDTH == 240 && SCREEN_HEIGHT == 135,
-                  "Cardputer ADV panel geometry was overridden -- something "
-                  "pulled in TFT_eSPI before configs.h. See tft_setup.h.");
+                  "Cardputer ADV panel geometry was overridden -- TFT_eSPI was "
+                  "reached before configs.h. Pass the panel macros as build "
+                  "flags; see the ADV build in RELEASING.md.");
 #elif defined(MARAUDER_V7) || defined(MARAUDER_V7_1) || defined(MARAUDER_V8)
     static_assert(SCREEN_WIDTH == 240 && SCREEN_HEIGHT == 320,
-                  "Marauder panel geometry was overridden -- something pulled "
-                  "in TFT_eSPI before configs.h. See tft_setup.h.");
+                  "Marauder panel geometry was overridden -- TFT_eSPI was "
+                  "reached before configs.h.");
 #endif
 
     static const bool COMPACT = (SCREEN_HEIGHT < 200);

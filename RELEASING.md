@@ -98,11 +98,23 @@ Hardware section of `README.md` before shipping this to anyone.
 Key differences from the v7 build:
 - **Chip/FQBN:** `esp32:esp32:m5stack_cardputer`. The core has no ADV entry; the
   plain Cardputer is the same ESP32-S3 family and the differences are menu
-  options (`PSRAM=enabled`).
+  options.
 - **Screen:** 240×135 landscape instead of 240×320 portrait. `RigTheme` switches
   to a compact profile below 200 px of height — smaller rows, one font step
-  down, card subtitles dropped. Panel driver and pins come from
-  `esp32_marauder/tft_setup.h`.
+  down, card subtitles dropped.
+- **Panel config comes from build flags** (`-DUSER_SETUP_LOADED -DST7789_DRIVER
+  …`), not from a `tft_setup.h` in the sketch. TFT_eSPI reads such a file before
+  its own setup and then treats the configuration as finished **for every
+  target**, so a file added for the Cardputer silently reconfigures the Marauder
+  boards too — that was tried, and it blanked the V7's display while changing
+  none of its values. Flags are per-build, land before any header is parsed, and
+  still reach the library: `platform.txt` has one `recipe.cpp.o.pattern` and it
+  carries `compiler.cpp.extra_flags`. Build with `--clean` when changing them,
+  or a cached TFT_eSPI object compiled under the old configuration survives.
+- **PSRAM off.** The ADV config defines no `HAS_PSRAM`, so the firmware never
+  allocates from it. Enabling it only adds an early-boot init that hangs if the
+  module's line mode (QSPI vs OPI) does not match the build — risk with no
+  return.
 - **Input:** the 56-key keyboard behind a TCA8418 I²C controller, not buttons.
   `RigInput` maps the printed arrow cluster (`; . , /`), ENTER and ESC/BACKSPACE
   onto the same six logical keys the button boards produce. The board's
@@ -113,10 +125,17 @@ Key differences from the v7 build:
   branches and fails.
 
 ```bash
-$ARDUINO_CLI compile \
-  --fqbn "esp32:esp32:m5stack_cardputer:PartitionScheme=huge_app,PSRAM=enabled" \
+PANEL="-DUSER_SETUP_LOADED -DST7789_DRIVER -DTFT_WIDTH=135 -DTFT_HEIGHT=240 \
+-DTFT_MOSI=35 -DTFT_SCLK=36 -DTFT_CS=37 -DTFT_DC=34 -DTFT_RST=33 -DTFT_BL=38 \
+-DTFT_BACKLIGHT_ON=HIGH -DLOAD_GLCD -DLOAD_FONT2 -DLOAD_FONT4 -DLOAD_FONT6 \
+-DLOAD_FONT7 -DLOAD_FONT8 -DLOAD_GFXFF -DSMOOTH_FONT \
+-DSPI_FREQUENCY=40000000 -DSPI_READ_FREQUENCY=20000000"
+
+$ARDUINO_CLI compile --clean \
+  --fqbn "esp32:esp32:m5stack_cardputer:PartitionScheme=huge_app,PSRAM=disabled" \
   $LIB_ARGS \
-  --build-property "compiler.cpp.extra_flags=-DMARAUDER_CARDPUTER_ADV -DMARAUDER_CORE_MODE -DMARAUDER_WDGWARS_UPLOAD -DMARAUDER_FILE_SERVER_AP" \
+  --build-property "compiler.c.extra_flags=$PANEL" \
+  --build-property "compiler.cpp.extra_flags=-DMARAUDER_CARDPUTER_ADV -DMARAUDER_CORE_MODE -DMARAUDER_WDGWARS_UPLOAD -DMARAUDER_FILE_SERVER_AP $PANEL" \
   --output-dir ./out-adv \
   ESP32Marauder/esp32_marauder/esp32_marauder.ino
 ```
