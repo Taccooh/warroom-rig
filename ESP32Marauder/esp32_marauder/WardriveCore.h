@@ -219,6 +219,19 @@ private:
     String        user_key;              // aus Settings, leer = no-encrypt
     uint8_t       assignment_version;
 
+    // Fleet size the current partition was computed for. Frozen together with
+    // the per-node assigned_index, and it has to be: a node derives its BLE
+    // role from the pair as
+    //     ble_host = (node_count <= 1) || (node_index == node_count - 1)
+    // so the two values only mean anything together. Sending a live count next
+    // to a frozen index lets the election move on its own -- one node drops,
+    // every remaining node recomputes, and the BLE host silently becomes a
+    // different node than the one the console is pointing at. Worse, since the
+    // count used to be read per packet, two nodes of the *same* partition could
+    // receive different counts and both conclude they were the host, or neither.
+    // 0 means "no partition yet".
+    uint8_t       partition_node_count;
+
     // Counter fuer Display + Stats.
     uint32_t total_rx_lines;             // alle akzeptierten Wigle-Lines
     uint32_t total_rx_wifi;

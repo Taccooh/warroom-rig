@@ -85,6 +85,7 @@ WardriveCore::WardriveCore() {
     memset(lmk, 0, sizeof(lmk));
     user_key = "";
     assignment_version = 1;
+    partition_node_count = 0;   // no partition until nodes register
     total_rx_lines = 0;
     total_rx_wifi = 0;
     total_rx_ble = 0;
@@ -265,6 +266,11 @@ void WardriveCore::recalculateChannelAssignments() {
         }
     }
     if (active_count == 0) return;
+
+    // Freeze the fleet size with the indices it belongs to. Everything that
+    // needs "how many nodes is this partition for" must read this, not a live
+    // count -- see the member's declaration.
+    partition_node_count = active_count;
 
 #ifdef WARDRIVE_2_4_ONLY
     // 2.4-GHz-only Fleet: nur Index 0..13 verteilen, 5-GHz-Slots bleiben unbesetzt.
@@ -453,7 +459,9 @@ bool WardriveCore::sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac) {
     msg.type = MSG_ADMIN;
     msg.assignment_version = assignment_version;
     msg.node_index = node_table[slot].assigned_index;
-    msg.node_count = getActiveNodeCount();
+    // The count this node's index was assigned under -- not today's headcount.
+    // These two travel together or the node's BLE-host election is meaningless.
+    msg.node_count = partition_node_count;
     msg.start_channel_idx = node_table[slot].start_channel_idx;
     msg.end_channel_idx = node_table[slot].end_channel_idx;
 
@@ -783,6 +791,7 @@ void WardriveCore::init() {
     drawn_pitch = 0;
     memset(drawn_sig, 0xFF, sizeof(drawn_sig));
     assignment_version = 1;
+    partition_node_count = 0;   // no partition until nodes register
     session_start_ms = millis();
     last_display_refresh_ms = 0;
     last_stale_check_ms = 0;
@@ -1318,10 +1327,16 @@ void WardriveCore::refreshCoreDisplay() {
             // also runs the BLE scanner. No protocol field needed: the node derives
             // its BLE role from the admin packet WE send —
             //   ble_host = (node_count <= 1) || (node_index == node_count - 1)
-            // (WiFiOps.cpp) — so mirroring that predicate here is exact. It can lag
-            // by one admin round right after a topology change, until the new
-            // assignment reaches the node.
-            const bool ble_host = (n <= 1) || (nr.assigned_index == n - 1);
+            // (WiFiOps.cpp) — so evaluating that predicate here is exact, as long
+            // as it is fed the same numbers the node was.
+            //
+            // It used to be fed the *live* active-node count instead, which is a
+            // different number as soon as a node drops: the marker then sat on a
+            // node that was not collecting BLE while the one that was showed
+            // nothing. Both values now come from the partition.
+            const bool ble_host = (partition_node_count > 0) &&
+                                  ((partition_node_count <= 1) ||
+                                   (nr.assigned_index == partition_node_count - 1));
             tft.setTextColor(WC_GOLD, rowbg);
             tft.setCursor(WC_X_SLICE, ty);
             if (nr.start_channel_idx < NUM_SCAN_CHANNELS &&

@@ -942,7 +942,9 @@ class WiFiScan
     void StopScan(uint8_t scan_mode);
     #ifdef MARAUDER_CORE_MODE
       void RunWardriveCore(uint16_t color);
-      void shutdownWardriveCore();
+      // shutdownWardriveCore() lived here and had no callers -- Rig Mode is a
+      // self-exiting run-view and leaves through WardriveCore::deinit(). Its
+      // only content was closing a POI file that Rig Mode never opens now.
     #endif
     #ifdef MARAUDER_WDGWARS_UPLOAD
       void RunWdgwarsUpload(uint16_t color);

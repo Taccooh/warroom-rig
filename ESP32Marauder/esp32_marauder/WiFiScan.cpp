@@ -4829,20 +4829,17 @@ void WiFiScan::RunWardriveCore(uint16_t color) {
 
   this->currentScanMode = WIFI_SCAN_WAR_DRIVE_CORE;
   wardrive_core_obj.init();
-  #if defined(HAS_GPS) && defined(HAS_SD)
-    this->openPoiFile();
-  #endif
+  // No POI file here. Rig Mode cannot tag one: tagPOI() has exactly one caller,
+  // a touch handler that fires only for WIFI_SCAN_WAR_DRIVE and
+  // WIFI_SCAN_STATION_WAR_DRIVE. Opening one on entry created a file that could
+  // never receive a point -- and nothing closed it either, because Rig Mode
+  // exits through WardriveCore::deinit() and the only path that called
+  // closePoiFile() (shutdownWardriveCore) had no callers at all. Result: one
+  // empty wardrive_poi_N.gpx per entry, kept forever. openPoiFile() also probes
+  // SD.exists() upward from 0 for a free index, so entering Rig Mode got slower
+  // the longer the pile grew.
   this->wifi_initialized = true;
   initTime = millis();
-}
-
-void WiFiScan::shutdownWardriveCore() {
-  if (wardrive_core_obj.isRunning()) {
-    #if defined(HAS_GPS) && defined(HAS_SD)
-      this->closePoiFile();
-    #endif
-    wardrive_core_obj.deinit();
-  }
 }
 #endif // MARAUDER_CORE_MODE
 
