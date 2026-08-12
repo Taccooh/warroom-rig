@@ -246,6 +246,15 @@ uint32_t currentTime  = 0;
 
 void setup()
 {
+  #if defined(WARROOM_BOOT_TRACE) && defined(HAS_SCREEN)
+    // Liveness signal that needs no PC: if the backlight comes up, the image
+    // booted and reached the first line of setup(). Normally the backlight is
+    // held off here until the splash is drawn, which makes a healthy boot and a
+    // dead board look identical from the outside for the whole of setup().
+    pinMode(TFT_BL, OUTPUT);
+    digitalWrite(TFT_BL, HIGH);
+  #endif
+
   randomSeed(esp_random());
   
   #ifndef DEVELOPER
@@ -264,8 +273,43 @@ void setup()
     digitalWrite(ACT_LED_PIN, LOW);
   #endif
 
-  while(!Serial)
-    delay(10);
+  // Wait for the console, but never longer than this. On the V7 `Serial` is a
+  // HardwareSerial and operator bool() is true the moment the driver is
+  // installed, so this returns immediately and the wait was invisible. On any
+  // board that boots with USB CDC (Cardputer ADV, and the C5 when built with
+  // CDCOnBoot=cdc) `Serial` is HWCDC, whose operator bool() stays false until a
+  // host actually opens the port -- so an unbounded wait here is a boot hang on
+  // battery, on a charger, and on a PC with no terminal attached. The screen is
+  // set up further down, so the device just looks dead.
+  //
+  // The diagnostic build waits far longer on purpose. Its whole output happens
+  // in setup(), so a trace nobody is listening to is a trace that never
+  // existed -- and on native USB there is no way to attach *during* a boot that
+  // takes a second. Waiting instead means the sequence is flash, open the
+  // terminal whenever, and the device starts talking at that moment. No reset
+  // to time by hand.
+  #ifdef WARROOM_BOOT_TRACE
+    // The diagnostic build waits much longer than the shipping one, because its
+    // entire output happens in setup() and a trace nobody is listening to is a
+    // trace that never existed.
+    //
+    // It is still bounded, and that is not a detail. Waiting forever deadlocks
+    // against the host: opening the port asserts DTR and RTS together, which is
+    // the USB-Serial-JTAG reset gesture, so the board reboots straight back into
+    // this wait -- open, reset, wait, open, reset, and not one byte ever comes
+    // out. A deadline breaks the cycle: whichever attempt does not land inside
+    // the window, the board carries on and the next one does. Ten seconds is
+    // comfortably longer than a reset plus USB re-enumeration.
+    const uint32_t serial_wait_ms = 10000;
+    const uint32_t serial_wait_start = millis();
+    while (!Serial && (millis() - serial_wait_start < serial_wait_ms))
+      delay(10);
+  #else
+    const uint32_t serial_wait_ms = 1500;
+    const uint32_t serial_wait_start = millis();
+    while (!Serial && (millis() - serial_wait_start < serial_wait_ms))
+      delay(10);
+  #endif
 
   #ifdef HAS_C5_SD
     sharedSPI.begin(SD_SCK, SD_MISO, SD_MOSI);
@@ -302,12 +346,23 @@ void setup()
     delay(10);
   #endif
 
+  #ifdef MARAUDER_CARDPUTER_ADV
+    // The Cap LoRa-1262 hangs its SX1262 on the same SPI bus as the microSD
+    // (MOSI 14 / MISO 39 / SCK 40), with its own chip select on G5. We never
+    // talk to the radio, but an undriven NSS lets it answer traffic meant for
+    // the card. Park it high so the SD card owns the bus alone. Harmless when
+    // no cap is attached: G5 is otherwise unused.
+    pinMode(5, OUTPUT);
+    digitalWrite(5, HIGH);
+  #endif
+
   //Serial.begin(115200);
 
   //while(!Serial)
   //  delay(10);
 
   Serial.println("ESP-IDF version is: " + String(esp_get_idf_version()));
+  WR_MARK("setup entered, serial up");
 
   #ifdef HAS_PSRAM
     if (!psramInit()) {
@@ -325,7 +380,9 @@ void setup()
   #endif
 
   #ifdef HAS_SCREEN
+    WR_MARK("-> display_obj.RunSetup()");
     display_obj.RunSetup();
+    WR_MARK("<- display_obj.RunSetup()");
     display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
   #endif
 
@@ -367,6 +424,7 @@ void setup()
   #endif
 
 
+  WR_MARK("splash drawn");
   backlightOn(); // Need this
 
   #ifdef HAS_SCREEN
@@ -380,7 +438,9 @@ void setup()
     #endif
   #endif
 
+  WR_MARK("-> settings_obj.begin()");
   settings_obj.begin();
+  WR_MARK("<- settings_obj.begin()");
 
   const char* type = settings_obj.getSettingType("ChanHop");
 
@@ -400,7 +460,9 @@ void setup()
     #endif
   #endif
 
+  WR_MARK("-> wifi_scan_obj.RunSetup()");
   wifi_scan_obj.RunSetup();
+  WR_MARK("<- wifi_scan_obj.RunSetup()");
 
   #ifdef HAS_SCREEN
     display_obj.tft.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -427,7 +489,9 @@ void setup()
   #endif
 
   #ifdef HAS_GPS
+    WR_MARK("-> gps_obj.begin()");
     gps_obj.begin();
+    WR_MARK("<- gps_obj.begin()");
   #endif
 
   #ifdef HAS_SCREEN  
@@ -437,13 +501,17 @@ void setup()
   // Input comes up before anything can be asked to respond to it. On the
   // Cardputer ADV this is what brings the TCA8418 keyboard onto the I2C bus;
   // on the button boards it has nothing to do.
+  WR_MARK("-> RigInput::begin()  [I2C keyboard]");
   RigInput::begin();
+  WR_MARK("<- RigInput::begin()");
 
   #ifdef HAS_SCREEN
     #ifdef MARAUDER_CARDPUTER_ADV
       display_obj.clearScreen();
     #endif
+    WR_MARK("-> menu_function_obj.RunSetup()");
     menu_function_obj.RunSetup();   // builds the menu tree (incl. the legacy tools)
+    WR_MARK("-> rig_ui_obj.init()");
     rig_ui_obj.init();              // ...then RigUI takes the screen and draws the console
   #endif
 
@@ -457,6 +525,7 @@ void setup()
 
   menu_function_obj.changeMenu(menu_function_obj.current_menu);*/
 
+  WR_MARK("setup complete, entering loop()");
   wifi_scan_obj.StartScan(WIFI_SCAN_OFF);
 }
 
@@ -465,6 +534,25 @@ void loop()
 {
   currentTime = millis();
   bool mini = false;
+
+  #ifdef WARROOM_BOOT_TRACE
+    // Heartbeat. Everything else this flag prints happens once, inside setup(),
+    // which makes reading it a race the host usually loses: on native USB the
+    // console is only "attached" while a handle is open, and opening one resets
+    // the board. Miss the window and a healthy boot is indistinguishable from a
+    // dead one -- both are silent.
+    //
+    // A line per second removes the race entirely, and answers the question
+    // that matters on its own: reaching loop() at all means setup() got past
+    // display bring-up.
+    static uint32_t wr_hb_ms = 0;
+    if (currentTime - wr_hb_ms > 1000) {
+      wr_hb_ms = currentTime;
+      Serial.printf("[HB] up=%lus heap=%u\n",
+                    (unsigned long)(currentTime / 1000),
+                    (unsigned)ESP.getFreeHeap());
+    }
+  #endif
 
   #ifdef SCREEN_BUFFER
     #ifndef HAS_ILI9341

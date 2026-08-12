@@ -212,9 +212,51 @@ void Display::RunSetup() {
     ft6336_init();
   #endif
   
+  #ifdef MARAUDER_CARDPUTER_ADV
+    // Start the SPI bus ourselves, before TFT_eSPI gets to it.
+    //
+    // On the S3, TFT_eSPI's `spi` is a reference to the global Arduino `SPI`
+    // (Processors/TFT_eSPI_ESP32_S3.c), and SPIClass::begin() opens with
+    // `if (_spi) return true;` -- it reports success and does nothing whenever
+    // the object already holds a bus handle. That handle is not proof the bus
+    // is running: spiStopBus() zeroes every register including SPI_CLK_GATE,
+    // and the peripheral-manager detach callbacks reach it without ever
+    // clearing _spi. Measured on this board: after TFT_eSPI's begin() reported
+    // success, CMD / CLOCK / USER and the clock gate all read 0 -- the
+    // signature of a bus whose last visitor was spiInitBus(). beginTransaction()
+    // then wrote clock and mode quite happily, but with the master clock gated
+    // every command set its busy bit and nothing ever cleared it. That is the
+    // spin inside tft_Write_8(), and why the boot died with the backlight on.
+    //
+    // end() before begin() is right whichever state we are in: with no handle
+    // end() is itself a no-op and begin() does the real work; with a stale
+    // handle end() drops it so begin() cannot take the early exit. TFT_eSPI's
+    // own begin() a moment later then finds a properly started bus on the right
+    // pins, and its early return is the correct answer for once.
+    SPI.end();
+    SPI.begin(TFT_SCLK, -1, TFT_MOSI, -1);
+
+    #ifdef WARROOM_BOOT_TRACE
+      // Evidence for the above, and for whether the fix took. SPI2 on the S3
+      // lives at 0x60024000; +0xE8 is SPI_CLK_GATE_REG. Guarded twice over --
+      // this address is meaningless on the classic ESP32 and must never be read
+      // on a V7.
+      #if CONFIG_IDF_TARGET_ESP32S3
+        Serial.printf("[SPI] after end+begin: gate=%lX clock=%lX user=%lX\n",
+                      (unsigned long)*(volatile uint32_t*)(0x60024000UL + 0xE8),
+                      (unsigned long)*(volatile uint32_t*)(0x60024000UL + 0x0C),
+                      (unsigned long)*(volatile uint32_t*)(0x60024000UL + 0x10));
+        Serial.flush();
+      #endif
+    #endif
+  #endif
+
+  WR_MARK("  disp: -> tft.init()");
   tft.init();
+  WR_MARK("  disp: <- tft.init()");
 
   tft.setRotation(SCREEN_ORIENTATION);
+  WR_MARK("  disp: <- setRotation()");
 
   tft.setCursor(0, 0);
 
@@ -226,7 +268,9 @@ void Display::RunSetup() {
 
   #endif
 
+  WR_MARK("  disp: -> clearScreen()");
   clearScreen();
+  WR_MARK("  disp: <- clearScreen()");
 
   #ifdef KIT
     pinMode(KIT_LED_BUILTIN, OUTPUT);
@@ -577,7 +621,12 @@ void Display::processAndPrintString(TFT_eSPI& tft, const String& originalString)
     }
   }
 
-  int count = TFT_WIDTH / CHAR_WIDTH;
+  // Trailing spaces are what erases the rest of the line when a long line is
+  // replaced by a short one, so the count has to be the number of characters
+  // the line actually holds. TFT_WIDTH is the panel in its native portrait
+  // orientation -- on the landscape ADV that is the screen's *height*, 135, and
+  // the padding covered 22 of the 40 columns, leaving the old tail standing.
+  int count = SCREEN_WIDTH / CHAR_WIDTH;
 
   char buf[count + 1];
   memset(buf, ' ', count);
@@ -631,10 +680,15 @@ void Display::displayBuffer(bool do_clear)
 		  #ifdef MARAUDER_PANCAKE
 			tft.setCursor(xPos, (i * TEXT_HEIGHT) + TOP_FIXED_AREA_2);
 		  #else
+			// SCREEN_HEIGHT, not TFT_HEIGHT: the latter is the panel in portrait,
+			// so on the landscape ADV it reads 240 and put the first line at y=40
+			// on a 135 px screen. The buffer appends at the end, so the last slot
+			// holds the *newest* line -- it landed at y=136 and the freshest
+			// scanner output was the one line permanently off the bottom.
 			#ifdef HAS_TOUCH
-			  tft.setCursor(xPos, (i * 12) + ((TFT_HEIGHT / 6) * 1.3));
+			  tft.setCursor(xPos, (i * 12) + ((SCREEN_HEIGHT / 6) * 1.3));
 			#else
-			  tft.setCursor(xPos, (i * 12) + (TFT_HEIGHT / 6));
+			  tft.setCursor(xPos, (i * 12) + (SCREEN_HEIGHT / 6));
 			#endif
 		  #endif
 

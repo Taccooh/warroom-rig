@@ -28,7 +28,33 @@
 //#include <User_Setup_marauder_m5stickc.h>
 //#include <User_Setup_marauder_m5stickcp2.h>
 //#include <User_Setup_pocket_sdr.h>
-#include <User_Setup_dual_nrf24.h>
+// [warroom-rig] THIS is the panel config every Marauder target actually gets.
+// The include below is the only uncommented one in this file, and this file --
+// not User_Setup.h -- is what TFT_eSPI reads. User_Setup.h is not included by
+// anything; do not audit a board's pins there, you will read a plausible config
+// that nothing uses. User_Setup_dual_nrf24.h is the OG Marauder ILI9341 panel
+// (ILI9341_DRIVER, TFT_CS 17, TFT_DC 26, TFT_MOSI 23, TFT_SCLK 18, TFT_BL 32,
+// TOUCH_CS -1). That is correct for the classic-ESP32 Marauder boards (V7/V7.1).
+// It is WRONG for the ESP32-C5 (Marauder V8): those pin numbers are the C5's
+// flash/MSPI bus and GPIO32 does not exist there -- which is exactly why V8 is
+// gated off in configs.h until someone supplies real C5 panel flags. The
+// Cardputer ADV takes the upstream setup file written for its exact board, one
+// #if below. That file is Koko's and ships with working Cardputer builds; it is
+// NOT what we were hand-rolling in build flags, which differed in three places:
+// ST7789_2_DRIVER rather than ST7789_DRIVER, 20 MHz rather than 40, and an
+// explicit TOUCH_CS. Reproducing a known-good panel config by hand and getting
+// three defines wrong is how the ADV ended up hanging in the first SPI
+// transaction of tft.init().
+//
+// Scoped by target macro so this cannot repeat the tft_setup.h mistake, where a
+// panel config added for one board silently reconfigured every board and blanked
+// the V7's display. MARAUDER_CARDPUTER_ADV is on the command line for that build
+// only; everything else still lands in the #else.
+#if defined(MARAUDER_CARDPUTER_ADV)
+  #include <User_Setup_marauder_m5cardputer_adv.h>
+#else
+  #include <User_Setup_dual_nrf24.h>
+#endif
 //#include <User_Setup_pocket_sdr_2.h>
 //#include <User_Setup_pocket_sdr_3.h>
 //#include <User_Setup_cyd_micro.h>

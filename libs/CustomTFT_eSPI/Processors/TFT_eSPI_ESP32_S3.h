@@ -80,7 +80,22 @@ SPI3_HOST = 2
   #elif CONFIG_IDF_TARGET_ESP32S2
     #define SPI_PORT 2 //FSPI(ESP32 S2)
   #elif CONFIG_IDF_TARGET_ESP32S3
-    #define SPI_PORT FSPI
+    // Was `FSPI`, which is 0 on the S3 -- Arduino's *bus enum*, not the
+    // peripheral number. SPI_PORT is only ever fed to the IDF register macros
+    // (SPI_CMD_REG, SPI_USER_REG, ...), and those go through REG_SPI_BASE(i),
+    // which on this IDF reads
+    //     (((i)>=2) ? (DR_REG_SPI2_BASE + ((i)-2) * 0x1000) : (0))
+    // so index 0 selects the `: (0)` arm and every SPI register write lands at
+    // its bare offset in the first 4 KB of the address map. The first one is
+    // *(0x10) = SPI_USR_MOSI in SET_BUS_WRITE_MODE, which panics the moment
+    // tft.init() sends its first command.
+    //
+    // TFT_eSPI carries its own REG_SPI_BASE for exactly this, but behind
+    // `#ifndef REG_SPI_BASE` -- and IDF 5.5 defines the macro itself now, so
+    // that fallback no longer fires. 2 = SPI2, which is the peripheral Arduino
+    // bus 0 (FSPI) actually drives, so the register block matches the bus the
+    // `spi` object is transacting on. [warroom-rig]
+    #define SPI_PORT 2
   #endif
 #endif
 
