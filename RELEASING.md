@@ -55,6 +55,11 @@ esptool.py --chip esp32 -p <PORT> write_flash 0x0 warroom-rig-core-vX.Y-merged.b
 
 or `arduino-cli upload -p <PORT> --fqbn esp32:esp32:d32 ...`.
 
+`--chip` follows the board, not the firmware: `esp32` for the Marauder v7/v7.1,
+**`esp32s3` for the Cardputer ADV**, `esp32c5` for the V8. Copying the v7 line
+onto a Cardputer is the first thing people get wrong. If esptool cannot pull the
+board into download mode on its own, hold BOOT/G0 while plugging the cable in.
+
 ### Marauder v7.1 variant
 
 Same board family, same FQBN, same everything — swap `-DMARAUDER_V7` for
@@ -193,6 +198,17 @@ $ARDUINO_CLI compile --clean \
 ```
 
 Image is ~1.68 MB (53 % of the 3 MB app slot).
+
+**Flash it** — note the chip, this is an S3 and not the v7's plain ESP32:
+
+```bash
+python -m esptool --chip esp32s3 -p <PORT> write_flash 0x0 \
+  warroom-rig-core-vX.Y-cardputer-adv-merged.bin
+```
+
+Nothing has to be built to get there: the release track ships the ADV image
+alongside the v7 one, so `...-cardputer-adv-merged.bin` off the Releases page is
+the short path, and the recipe above is for changing something.
 
 **Panel flags.** The recipe drives the panel with `-DST7789_DRIVER` and
 `-DSPI_FREQUENCY=40000000`. These are now confirmed on hardware: the ADV boots,
