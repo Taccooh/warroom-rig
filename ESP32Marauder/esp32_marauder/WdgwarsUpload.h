@@ -107,6 +107,7 @@ private:
     uint32_t last_display_refresh_ms = 0;
     uint32_t center_press_start_ms = 0;
     bool center_was_pressed = false;
+    bool back_was_pressed = false;     // edge state for the BACK-key exit
     bool prompt_confirmed = false;     // user pressed Center to confirm upload
     bool waiting_for_confirm = false;  // prompt is up
 

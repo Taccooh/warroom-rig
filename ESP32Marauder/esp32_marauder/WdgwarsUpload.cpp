@@ -189,6 +189,13 @@ void WdgwarsUpload::init() {
     prompt_confirmed = false;
     center_press_start_ms = 0;
     center_was_pressed = false;
+    // Adopt a BACK key that is already down -- it is very likely the one that
+    // opened this view. See handleCenterLongPressForExit().
+    #if defined(RIG_HAS_NAV) && defined(RIG_HAS_BACK)
+      back_was_pressed = RigInput::down(RigInput::BACK);
+    #else
+      back_was_pressed = false;
+    #endif
     last_display_refresh_ms = 0;
 
     #ifdef HAS_SCREEN
@@ -369,6 +376,19 @@ void WdgwarsUpload::runTick() {
                     state = State::CONNECTING_AP;
                 }
             }
+
+            #ifdef RIG_HAS_BACK
+              // BACK at a confirm prompt means "no", which here is the same as
+              // cancelling out of the mode -- there is nothing else to go back to.
+              const bool back_now = RigInput::down(RigInput::BACK);
+              if (back_now && !back_was_pressed) {
+                  back_was_pressed = true;
+                  Serial.println("WDG: confirm-cancel via BACK");
+                  deinit();
+                  return;
+              }
+              if (!back_now) back_was_pressed = false;
+            #endif
         #endif
     }
 }
@@ -542,7 +562,18 @@ bool WdgwarsUpload::uploadOneFile(const String& path) {
     size_t fsize = f.size();
     if (fsize == 0) {
         f.close();
-        last_error_msg = "empty file: " + path;
+        // A zero-byte log carries nothing anyone could import, and leaving it on
+        // the card means it comes back in the picker on every single run -- junk
+        // that never ages out and buries the real drives. Remove it here: the
+        // rename-on-success path cannot do this job, it only ever sees files
+        // that uploaded, which an empty one never will.
+        if (SD.remove(path)) {
+            last_error_msg = "empty, removed: " + path;
+            Serial.printf("WDG: removed empty %s\n", path.c_str());
+        } else {
+            last_error_msg = "empty, remove failed: " + path;
+            Serial.printf("WDG: remove FAILED for empty %s\n", path.c_str());
+        }
         return false;
     }
 
@@ -834,7 +865,7 @@ void WdgwarsUpload::renderDisplay() {
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.print(last_error_msg);
                 display_obj.tft.setCursor(4, y + LH);
-                display_obj.tft.print("Hold CENTER 2s to exit.");
+                display_obj.tft.print(RIG_HINT_EXIT);
                 break;
 
             case State::NO_FILES:
@@ -843,7 +874,7 @@ void WdgwarsUpload::renderDisplay() {
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.print("logs found.");
                 display_obj.tft.setCursor(4, y + LH);
-                display_obj.tft.print("Hold CENTER 2s to exit.");
+                display_obj.tft.print(RIG_HINT_EXIT);
                 break;
 
             case State::CONNECTING_AP:
@@ -861,7 +892,7 @@ void WdgwarsUpload::renderDisplay() {
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.print(last_error_msg);
                 display_obj.tft.setCursor(4, y + LH);
-                display_obj.tft.print("Hold CENTER 2s to exit.");
+                display_obj.tft.print(RIG_HINT_EXIT);
                 break;
 
             case State::UPLOADING: {
@@ -920,7 +951,7 @@ void WdgwarsUpload::renderDisplay() {
                 // Keep the original blank-line gap before the hint; after a
                 // wrapped error block the text already provides the separation.
                 display_obj.tft.setCursor(4, y + (showed_err ? 4 : LH));
-                display_obj.tft.print("Hold CENTER 2s to exit.");
+                display_obj.tft.print(RIG_HINT_EXIT);
                 break;
             }
 
@@ -962,9 +993,9 @@ void WdgwarsUpload::renderConfirmPrompt() {
 
         display_obj.tft.setTextColor(TFT_CYAN);
         display_obj.tft.setCursor(4, y); y += LH;
-        display_obj.tft.print("Tap CENTER to upload");
+        display_obj.tft.print(RIG_HINT_CONFIRM);
         display_obj.tft.setCursor(4, y);
-        display_obj.tft.print("Hold 2s to cancel");
+        display_obj.tft.print(RIG_HINT_CANCEL);
     #endif
 }
 
@@ -1022,7 +1053,7 @@ void WdgwarsUpload::renderSelectList() {
         display_obj.tft.printf("%u/%u selected", sel_n, pending_count);
         display_obj.tft.setTextColor(TFT_DARKGREY);
         display_obj.tft.setCursor(4, fy - 10);
-        display_obj.tft.print("C pick  L all  R GO  holdC exit");
+        display_obj.tft.print(RIG_HINT_PICK);
     #endif
 }
 
@@ -1165,17 +1196,41 @@ void WdgwarsUpload::runSelectionModal() {
     #ifdef RIG_HAS_NAV
         // Wait for the button that opened this mode to be released, else it lands
         // as the first action inside the loop.
-        while (RigInput::down(RigInput::SELECT)) delay(10);
+        // Bounded: a key that never reports a release -- an I2C keyboard whose
+        // controller stopped answering, a latched touch -- must not take the
+        // firmware with it. Falling through with the key still down costs one
+        // stray selection; hanging here costs the drive.
+        {
+            const uint32_t rel_deadline = millis() + 1000;
+            while (RigInput::down(RigInput::SELECT) && (int32_t)(millis() - rel_deadline) < 0)
+                delay(10);
+        }
         delay(60);
         renderSelectList();
 
         bool nav_u = false, nav_d = false, nav_l = false, nav_r = false;
         bool c_held = false;
         uint32_t c_start = 0;
+        // Seeded from the live state for the same reason the SELECT release is
+        // waited out above: ESC may still be down from the menu that got here.
+        #ifdef RIG_HAS_BACK
+        bool nav_b = RigInput::down(RigInput::BACK);
+        #endif
 
         for (;;) {
             uint32_t now = millis();
             bool changed = false;
+
+            // BACK: leave the picker without uploading anything.
+            #ifdef RIG_HAS_BACK
+            bool b = (RigInput::down(RigInput::BACK));
+            if (b && !nav_b) {
+                Serial.println("WDG: selection cancelled (BACK)");
+                deinit();
+                return;
+            }
+            nav_b = b;
+            #endif
 
             // CENTER: short tap = toggle current file; long-press = cancel & exit.
             bool c_now = (RigInput::down(RigInput::SELECT));
@@ -1316,11 +1371,26 @@ void WdgwarsUpload::handleCenterLongPressForExit() {
             } else if ((now - center_press_start_ms) >= WDGWARS_EXIT_HOLD_MS) {
                 Serial.println("WDG: long-press -> exit");
                 deinit();
+                return;
             }
         } else {
             center_was_pressed = false;
             center_press_start_ms = 0;
         }
+
+        #ifdef RIG_HAS_BACK
+          // Same as Rig Mode and the file server: a board with a back key gets
+          // to press it. Edge-triggered and seeded in init(), so the ESC that
+          // opened this view does not immediately close it again.
+          const bool back_now = RigInput::down(RigInput::BACK);
+          if (back_now && !back_was_pressed) {
+              back_was_pressed = true;
+              Serial.println("WDG: BACK -> exit");
+              deinit();
+              return;
+          }
+          if (!back_now) back_was_pressed = false;
+        #endif
     #endif
 }
 

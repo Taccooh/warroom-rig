@@ -1,6 +1,8 @@
 #include "FileServerAP.h"
 
 #include "RigInput.h"
+#include "RigTheme.h"       // screen shape; this view keeps the plain Marauder
+                            // look but has to fit either panel
 #ifdef MARAUDER_FILE_SERVER_AP
 
 #include <Arduino.h>
@@ -8,6 +10,8 @@
 #include <SD.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_random.h>
+#include <Preferences.h>
 #include <ESPAsyncWebServer.h>
 
 #include "Display.h"
@@ -31,8 +35,36 @@ static const IPAddress AP_SUBNET(255, 255, 255, 0);
 static const uint16_t HTTP_PORT = 80;
 static const uint8_t AP_CHANNEL = 6;
 static const uint8_t AP_MAX_CONN = 4;
-static const char* DEFAULT_PASSWORD = "warroomrig";
 static const char* SETTINGS_PATH = "/fileserver.txt";
+static const char* DEFAULT_HTTP_USER = "rig";
+
+// There is deliberately no default PSK constant here. This repo is public, so
+// a constant would ship the same PSK on every unit built from it, and the AP
+// name announces what the AP is. The PSK and the HTTP password are generated
+// once per device (see ensureSecrets()) and kept in NVS, so they survive a
+// reboot but are not in the source tree.
+static const char* PREFS_NAMESPACE = "wrfileap";
+static const char* PREFS_KEY_PSK = "psk";
+static const char* PREFS_KEY_HTTPPW = "httppw";
+static const uint8_t GENERATED_PSK_LEN = 12;
+static const uint8_t GENERATED_HTTPPW_LEN = 10;
+
+// Exactly 32 symbols, so `& 31` picks one without modulo bias. 0/O and 1/I are
+// left out on purpose: the operator reads these off the 1x TFT font and types
+// them into a phone, and a misread character means a failed association with
+// no diagnostic. 32 symbols = 5 bits per character.
+static const char SECRET_ALPHABET[] = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+// Guards last_request_path, which the AsyncTCP task writes and the loop task
+// reads. Kept file-static so the FreeRTOS types stay out of the header.
+static portMUX_TYPE last_path_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// One authentication middleware for the whole server. Registered on the
+// server (not per handler) so it also covers the catch-all 404 handler, and
+// so no route can be added later that quietly bypasses it. Static because
+// AsyncMiddlewareChain::addMiddleware(AsyncMiddleware*) does not take
+// ownership — it only deletes middlewares it allocated itself.
+static AsyncAuthenticationMiddleware http_auth;
 
 // Display + exit-hold tuning. Reuse the WDGWARS constants if defined, else
 // pick conservative local defaults.
@@ -76,7 +108,12 @@ void FileServerAP::loadOptionalSettings() {
     char ssid_buf[32];
     snprintf(ssid_buf, sizeof(ssid_buf), "warroom-rig-Files-%02X%02X", mac[4], mac[5]);
     ssid = String(ssid_buf);
-    password = String(DEFAULT_PASSWORD);
+    // Left empty on purpose — ensureSecrets() fills in whatever the operator
+    // did not override, once the radio is up and esp_random() is a real TRNG.
+    password = "";
+    http_user = String(DEFAULT_HTTP_USER);
+    http_password = "";
+    http_auth_digest = true;
 
     if (!sd_obj.supported) return;  // SD missing — go with defaults.
 
@@ -95,9 +132,67 @@ void FileServerAP::loadOptionalSettings() {
         val.trim();
         if (key == "ssid" && val.length() > 0) ssid = val;
         else if (key == "pass" && val.length() >= 8) password = val;
+        else if (key == "user" && val.length() > 0) http_user = val;
+        else if (key == "httppass" && val.length() > 0) http_password = val;
+        else if (key == "auth") {
+            val.toLowerCase();
+            http_auth_digest = (val != "basic");
+        }
     }
     f.close();
+    // SSID only. The passwords go to the TFT, which needs someone standing at
+    // the rig; on a screenless build drawStaticFrame() falls back to serial,
+    // and that is the only path that ever prints them.
     Serial.printf("FILES: loaded settings ssid=%s\n", ssid.c_str());
+}
+
+// =========================================================================
+// Per-device secrets
+// =========================================================================
+// A constant PSK in a public repo is the same PSK on every unit, and deriving
+// one from the MAC is no better: the SoftAP puts its BSSID in every beacon, so
+// a passive listener can recompute anything MAC-derived without ever
+// associating. The only shape that actually holds is a random secret the
+// device keeps to itself, which is why these live in NVS and are shown on the
+// TFT rather than written anywhere a client could read them.
+static String makeRandomSecret(uint8_t len) {
+    String out;
+    out.reserve(len);
+    for (uint8_t i = 0; i < len; i++) {
+        out += SECRET_ALPHABET[esp_random() & 31];
+    }
+    return out;
+}
+
+void FileServerAP::ensureSecrets() {
+    bool need_psk = (password.length() < 8);
+    bool need_httppw = (http_password.length() == 0);
+    if (!need_psk && !need_httppw) return;  // both came from /fileserver.txt
+
+    Preferences prefs;
+    // Read-write: the first run has to store what it generates. If NVS is
+    // unavailable we still come up secured, the secrets just change every
+    // session and the phone has to forget the network each time.
+    bool have_nvs = prefs.begin(PREFS_NAMESPACE, false);
+    if (!have_nvs) Serial.println("FILES: NVS unavailable, secrets are session-only");
+
+    if (need_psk) {
+        String v = have_nvs ? prefs.getString(PREFS_KEY_PSK, "") : String("");
+        if (v.length() < 8) {
+            v = makeRandomSecret(GENERATED_PSK_LEN);
+            if (have_nvs) prefs.putString(PREFS_KEY_PSK, v);
+        }
+        password = v;
+    }
+    if (need_httppw) {
+        String v = have_nvs ? prefs.getString(PREFS_KEY_HTTPPW, "") : String("");
+        if (v.length() == 0) {
+            v = makeRandomSecret(GENERATED_HTTPPW_LEN);
+            if (have_nvs) prefs.putString(PREFS_KEY_HTTPPW, v);
+        }
+        http_password = v;
+    }
+    if (have_nvs) prefs.end();
 }
 
 // =========================================================================
@@ -107,6 +202,10 @@ bool FileServerAP::startSoftAP() {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
     delay(50);
+    // Only now — WiFi.mode() has started the radio, and esp_random() is only
+    // specified to be a hardware RNG while RF is running. Generating the
+    // secrets before this point would seed them from the bootup PRNG.
+    ensureSecrets();
     WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
     bool ok = WiFi.softAP(ssid.c_str(), password.c_str(), AP_CHANNEL, /*hidden*/ 0, AP_MAX_CONN);
     if (!ok) {
@@ -130,7 +229,36 @@ static String htmlEscape(const String& s) {
             case '>': out += "&gt;";  break;
             case '&': out += "&amp;"; break;
             case '"': out += "&quot;"; break;
+            // Attributes in this page are single-quoted (value='...'), so the
+            // apostrophe is as much of an attribute terminator as the double
+            // quote is. A filename is attacker-placeable — anything that lands
+            // on the card ends up in this HTML.
+            case '\'': out += "&#39;"; break;
             default:  out += c;
+        }
+    }
+    return out;
+}
+
+// Escape for a single-quoted JavaScript string literal that lives inside an
+// HTML attribute (the delete button's onsubmit="return confirm('...')").
+// htmlEscape() on its own does not close that hole: the HTML parser turns
+// &#39; back into a bare apostrophe *before* the JS parser ever sees the
+// attribute, so the string literal still ends early. Backslash escapes survive
+// the entity decode, so js-escape first and let htmlEscape() run over the
+// result.
+static String jsStringEscape(const String& s) {
+    String out;
+    out.reserve(s.length() + 8);
+    for (size_t i = 0; i < s.length(); i++) {
+        char c = s.charAt(i);
+        if (c == '\\' || c == '\'' || c == '"') {
+            out += '\\';
+            out += c;
+        } else if (c == '\r' || c == '\n') {
+            out += ' ';  // a literal newline would also terminate the literal
+        } else {
+            out += c;
         }
     }
     return out;
@@ -159,127 +287,6 @@ static String formatSize(uint32_t bytes) {
     else if (bytes < 1024UL * 1024UL) snprintf(b, sizeof(b), "%.1f KB", bytes / 1024.0);
     else snprintf(b, sizeof(b), "%.1f MB", bytes / (1024.0 * 1024.0));
     return String(b);
-}
-
-// Stream the directory listing directly into a Print target (typically an
-// AsyncResponseStream). The earlier `renderListingHtml() -> String` variant
-// truncated to ~8 KB even when the SD held 140+ entries — observed on TJ's
-// Armbian-overlay SD: serial showed all entries enumerated, browser only
-// rendered the first two table rows. Streaming sidesteps the String-size
-// limit entirely and keeps heap pressure low.
-static void writeListingHtml(Print& out, const String& dir_path) {
-    out.print(F("<!doctype html><html><head><meta charset=utf-8>"
-              "<meta name=viewport content='width=device-width,initial-scale=1'>"
-              "<title>warroom-rig Files</title>"
-              "<style>"
-              "body{font:14px/1.4 -apple-system,Segoe UI,sans-serif;margin:1em;color:#222}"
-              "h1{font-size:1.1em;margin:0 0 .5em}"
-              "table{border-collapse:collapse;width:100%}"
-              "td,th{padding:.4em .6em;border-bottom:1px solid #eee;text-align:left}"
-              "th{background:#fafafa;font-weight:600}"
-              "tr:hover td{background:#f6f9ff}"
-              "a{color:#0055cc;text-decoration:none}a:hover{text-decoration:underline}"
-              ".n{text-align:right;color:#666;font-variant-numeric:tabular-nums}"
-              ".bc{color:#888;margin-bottom:.5em}"
-              "button.rm{background:none;border:1px solid #d33;color:#d33;cursor:pointer;border-radius:3px;padding:.1em .5em;font-size:.85em}"
-              "button.rm:hover{background:#fee}"
-              "</style></head><body>"));
-    out.print(F("<h1>SD Files</h1>"));
-
-    // Breadcrumb.
-    out.print(F("<div class=bc>"));
-    if (dir_path == "/") {
-        out.print(F("<a href='/'>/</a>"));
-    } else {
-        out.print(F("<a href='/'>/</a>"));
-        String acc;
-        int from = 1;
-        while (from < (int)dir_path.length()) {
-            int next = dir_path.indexOf('/', from);
-            if (next < 0) next = dir_path.length();
-            String seg = dir_path.substring(from, next);
-            acc += "/" + seg;
-            out.print(F(" / <a href='/ls?path="));
-            out.print(urlEncode(acc));
-            out.print(F("'>"));
-            out.print(htmlEscape(seg));
-            out.print(F("</a>"));
-            from = next + 1;
-        }
-    }
-    out.print(F("</div>"));
-
-    File dir = SD.open(dir_path);
-    if (!dir) {
-        out.print(F("<p style='color:#d33'>Cannot open directory.</p></body></html>"));
-        return;
-    }
-    if (!dir.isDirectory()) {
-        dir.close();
-        out.print(F("<p style='color:#d33'>Not a directory.</p></body></html>"));
-        return;
-    }
-
-    out.print(F("<table><thead><tr><th>Name</th><th class=n>Size</th><th></th></tr></thead><tbody>"));
-
-    File entry = dir.openNextFile();
-    uint32_t count = 0;
-    while (entry) {
-        String n = entry.name();
-        int slash = n.lastIndexOf('/');
-        String base = (slash >= 0) ? n.substring(slash + 1) : n;
-
-        // Build absolute path of this entry.
-        String full = dir_path;
-        if (!full.endsWith("/")) full += "/";
-        full += base;
-
-        // Defensive: the openNextFile() iterator returns File handles whose
-        // isDirectory() and size() metadata is unreliable on some ESP32 SD
-        // library versions. Re-open by full path to get correct metadata.
-        File handle = SD.open(full);
-        bool is_dir = handle ? handle.isDirectory() : entry.isDirectory();
-        uint32_t sz = is_dir ? 0 : (handle ? handle.size() : entry.size());
-        if (handle) handle.close();
-
-        out.print(F("<tr><td>"));
-        if (is_dir) {
-            out.print(F("<a href='/ls?path="));
-            out.print(urlEncode(full));
-            out.print(F("'>"));
-            out.print(htmlEscape(base));
-            out.print(F("/</a>"));
-        } else {
-            out.print(F("<a href='/dl?path="));
-            out.print(urlEncode(full));
-            out.print(F("'>"));
-            out.print(htmlEscape(base));
-            out.print(F("</a>"));
-        }
-        out.print(F("</td><td class=n>"));
-        if (!is_dir) out.print(formatSize(sz));
-        else out.print(F("&mdash;"));
-        out.print(F("</td><td>"));
-        if (!is_dir) {
-            out.print(F("<form method=post action='/rm' style='display:inline' "
-                        "onsubmit=\"return confirm('Delete "));
-            out.print(htmlEscape(base));
-            out.print(F("?')\"><input type=hidden name=path value='"));
-            out.print(htmlEscape(full));
-            out.print(F("'><button class=rm type=submit>delete</button></form>"));
-        }
-        out.print(F("</td></tr>"));
-
-        entry.close();
-        entry = dir.openNextFile();
-        count++;
-        if (count > 500) break;  // hard cap to keep iteration bounded
-    }
-    dir.close();
-
-    out.print(F("</tbody></table>"));
-    if (count == 0) out.print(F("<p style='color:#888'>empty</p>"));
-    out.print(F("</body></html>"));
 }
 
 static String guessMime(const String& path) {
@@ -336,7 +343,7 @@ static void appendEntryRow(String& out, const String& dir_path, File& entry) {
     out += "</td><td>";
     if (!is_dir) {
         out += "<form method=post action='/rm' style='display:inline' onsubmit=\"return confirm('Delete ";
-        out += htmlEscape(base);
+        out += htmlEscape(jsStringEscape(base));  // JS string inside an HTML attribute — both layers
         out += "?')\"><input type=hidden name=path value='";
         out += htmlEscape(full);
         out += "'><button class=rm type=submit>delete</button></form>";
@@ -463,7 +470,42 @@ static void readWdgwarsCfg(String& ssid, String& pass, String& apikey) {
     }
     f.close();
 }
+
+// What the config form is allowed to say about a stored value: that it exists.
+// Not its content, not its length.
+static const __FlashStringHelper* wdgcfgStatus(const String& v) {
+    return v.length() ? F("(configured)") : F("(not set)");
+}
 #endif  // MARAUDER_WDGWARS_UPLOAD
+
+// =========================================================================
+// Authentication
+// =========================================================================
+// Being associated to the AP is not authorisation. The card holds the full
+// movement history and /wdgwars.txt, /rm deletes without a server-side
+// confirmation, and the rig runs unattended — so the AP password is the outer
+// gate and this is the inner one. The middleware is attached to the server
+// rather than to each handler so that the catch-all 404 is covered too and a
+// route added later cannot end up unprotected by omission.
+void FileServerAP::configureAuth() {
+    http_auth.setRealm("warroom-rig");
+    http_auth.setAuthFailureMessage("Authentication required.");
+    http_auth.setUsername(http_user.c_str());
+    http_auth.setPassword(http_password.c_str());
+    // Digest by default: the link is plain HTTP, and WPA2-PSK does not hide
+    // one station's traffic from another station that knows the PSK, so basic
+    // auth would hand the password to anyone else already on the AP.
+    // AUTH_DENIED is the fail-closed branch — the middleware waves a request
+    // through when it has no credentials, so a missing password must turn into
+    // "nobody gets in", never "everybody gets in".
+    if (http_auth.hasCredentials()) {
+        http_auth.setAuthType(http_auth_digest ? AsyncAuthType::AUTH_DIGEST
+                                               : AsyncAuthType::AUTH_BASIC);
+    } else {
+        http_auth.setAuthType(AsyncAuthType::AUTH_DENIED);
+        Serial.println("FILES: no HTTP credentials, refusing every request");
+    }
+}
 
 // =========================================================================
 // Route handlers
@@ -473,7 +515,7 @@ void FileServerAP::registerRoutes() {
 
     server->on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
         total_get_count++;
-        last_request_path = "/";
+        setLastRequestPath("/");
         sendChunkedListing(request, "/");
     });
 
@@ -481,7 +523,7 @@ void FileServerAP::registerRoutes() {
         total_get_count++;
         String raw = request->hasParam("path") ? request->getParam("path")->value() : String("/");
         String safe = sanitizePath(raw);
-        last_request_path = safe;
+        setLastRequestPath(safe.c_str());
         if (safe.length() == 0) { request->send(400, "text/plain", "bad path"); return; }
         sendChunkedListing(request, safe);
     });
@@ -490,7 +532,7 @@ void FileServerAP::registerRoutes() {
         total_get_count++;
         String raw = request->hasParam("path") ? request->getParam("path")->value() : String("");
         String safe = sanitizePath(raw);
-        last_request_path = safe;
+        setLastRequestPath(safe.c_str());
         if (safe.length() == 0) { request->send(400, "text/plain", "bad path"); return; }
         if (!SD.exists(safe)) { request->send(404, "text/plain", "not found"); return; }
         File f = SD.open(safe, FILE_READ);
@@ -516,7 +558,7 @@ void FileServerAP::registerRoutes() {
         if (request->hasParam("path", true)) raw = request->getParam("path", true)->value();
         else if (request->hasParam("path"))  raw = request->getParam("path")->value();
         String safe = sanitizePath(raw);
-        last_request_path = safe;
+        setLastRequestPath(safe.c_str());
         if (safe.length() == 0) { request->send(400, "text/plain", "bad path"); return; }
         if (!SD.exists(safe)) { request->send(404, "text/plain", "not found"); return; }
         // Refuse to rm a directory — keep blast radius small.
@@ -543,7 +585,7 @@ void FileServerAP::registerRoutes() {
     // the SD card. Writes /wdgwars.txt, which WdgwarsUpload reads on the next run.
     server->on("/wdgcfg", HTTP_GET, [this](AsyncWebServerRequest* request) {
         total_get_count++;
-        last_request_path = "/wdgcfg";
+        setLastRequestPath("/wdgcfg");
         String ssid, pass, apikey;
         readWdgwarsCfg(ssid, pass, apikey);
         String h;
@@ -557,24 +599,42 @@ void FileServerAP::registerRoutes() {
                "button{margin-top:1em;padding:.6em 1.2em;background:#0055cc;color:#fff;border:0;border-radius:4px;cursor:pointer}"
                "a{color:#0055cc}.ok{background:#e6ffed;border:1px solid #34c759;padding:.5em;border-radius:4px}"
                ".hint{color:#888;font-size:.9em}code{background:#f2f2f2;padding:0 .3em;border-radius:3px}"
+               ".st{font-weight:400;color:#888;font-size:.9em}"
                "</style></head><body><h1>WDGWars Upload Config</h1>"
                "<p><a href='/'>&larr; SD Files</a></p>");
         if (request->hasParam("saved")) h += F("<p class=ok>Saved to /wdgwars.txt.</p>");
-        h += F("<form method=post action='/wdgcfg'>"
-               "<label>WiFi SSID</label><input name=ssid autocapitalize=off autocorrect=off value=\"");
-        h += htmlEscape(ssid);
-        h += F("\"><label>WiFi Password</label><input name=pass autocapitalize=off autocorrect=off value=\"");
-        h += htmlEscape(pass);
-        h += F("\"><label>wdgwars API Key</label><input name=apikey autocapitalize=off autocorrect=off value=\"");
-        h += htmlEscape(apikey);
-        h += F("\"><button type=submit>Save</button>"
+        // The stored values are never rendered back. This form used to
+        // pre-fill them as plain input values, which put the home WiFi
+        // password and the API key on screen in cleartext for anyone standing
+        // near the phone or looking at a page left open. Showing only whether
+        // a value is set keeps the form usable without doing that.
+        h += F("<form method=post action='/wdgcfg' autocomplete=off>"
+               "<label>WiFi SSID <span class=st>");
+        h += wdgcfgStatus(ssid);
+        h += F("</span></label>"
+               "<input name=ssid type=text autocomplete=off autocapitalize=off autocorrect=off "
+               "placeholder='leave empty to keep current'>"
+               "<label>WiFi Password <span class=st>");
+        h += wdgcfgStatus(pass);
+        h += F("</span></label>"
+               "<input name=pass type=text autocomplete=off autocapitalize=off autocorrect=off "
+               "placeholder='leave empty to keep current'>"
+               "<label>wdgwars API Key <span class=st>");
+        h += wdgcfgStatus(apikey);
+        h += F("</span></label>"
+               "<input name=apikey type=text autocomplete=off autocapitalize=off autocorrect=off "
+               "placeholder='leave empty to keep current'>"
+               "<button type=submit>Save</button>"
                "<p class=hint>Stored as <code>/wdgwars.txt</code> on the SD card and used by "
-               "WDGWars Upload mode to connect and authenticate. An empty password means an open AP.</p>"
+               "WDGWars Upload mode to connect and authenticate. A field left empty keeps the "
+               "value that is already stored; to wipe them, delete <code>/wdgwars.txt</code> "
+               "from the file listing.</p>"
                "</form></body></html>");
         request->send(200, "text/html", h);
     });
 
     server->on("/wdgcfg", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        setLastRequestPath("/wdgcfg");
         auto getP = [request](const char* n) -> String {
             if (request->hasParam(n, true)) return request->getParam(n, true)->value();
             return String();
@@ -582,17 +642,63 @@ void FileServerAP::registerRoutes() {
         String ssid = getP("ssid"); ssid.trim();
         String pass = getP("pass");                 // not trimmed: keep the password verbatim
         String apikey = getP("apikey"); apikey.trim();
-        // Rewrite from scratch so stale keys never linger.
-        SD.remove("/wdgwars.txt");
-        File f = SD.open("/wdgwars.txt", FILE_WRITE);
-        if (!f) { request->send(500, "text/plain", "cannot write /wdgwars.txt"); return; }
-        f.println("# wdgwars upload credentials (written by File Server config UI)");
-        f.print("ssid=");   f.println(ssid);
-        f.print("pass=");   f.println(pass);
-        f.print("apikey="); f.println(apikey);
+
+        // The form no longer pre-fills the stored values, so an empty field
+        // means "I did not touch this one", not "clear it". Merge against what
+        // is on the card, otherwise saving a new API key would silently wipe
+        // the WiFi credentials.
+        String cur_ssid, cur_pass, cur_apikey;
+        readWdgwarsCfg(cur_ssid, cur_pass, cur_apikey);
+        if (ssid.length() == 0)   ssid   = cur_ssid;
+        if (pass.length() == 0)   pass   = cur_pass;
+        if (apikey.length() == 0) apikey = cur_apikey;
+
+        String body;
+        body.reserve(256);
+        body += F("# wdgwars upload credentials (written by File Server config UI)\n");
+        body += "ssid=";   body += ssid;   body += "\n";
+        body += "pass=";   body += pass;   body += "\n";
+        body += "apikey="; body += apikey; body += "\n";
+
+        // Write to a scratch file and swap it in. The old shape opened
+        // /wdgwars.txt with FILE_WRITE, which is "w" and truncates on open, so
+        // a full card or a yanked SD destroyed the only copy of the home WiFi
+        // password and the API key and left a 500 as the whole story. Here the
+        // live file is only touched once the replacement is complete on the
+        // card; if the rename is what fails, the data is still in the scratch
+        // file for the operator to recover.
+        static const char* TMP_PATH = "/wdgwars.tmp";
+        static const char* CFG_PATH = "/wdgwars.txt";
+        SD.remove(TMP_PATH);
+        File f = SD.open(TMP_PATH, FILE_WRITE);
+        if (!f) { request->send(500, "text/plain", "cannot write /wdgwars.tmp"); return; }
+        size_t written = f.print(body);
         f.close();
-        Serial.printf("FILES: wrote /wdgwars.txt (ssid=%s, apikey-len=%u)\n",
-                      ssid.c_str(), apikey.length());
+
+        bool ok = (written == body.length());
+        if (ok) {
+            // Re-open and compare sizes: a short write on a full card can
+            // still report the bytes as accepted until they are flushed.
+            File v = SD.open(TMP_PATH, FILE_READ);
+            ok = v && (v.size() == body.length());
+            if (v) v.close();
+        }
+        if (!ok) {
+            SD.remove(TMP_PATH);
+            request->send(500, "text/plain", "write failed, /wdgwars.txt unchanged");
+            return;
+        }
+
+        // FAT rename refuses an existing destination, so the old file has to
+        // go first. The replacement is already complete on the card at this
+        // point, so the worst case is a /wdgwars.tmp left behind.
+        SD.remove(CFG_PATH);
+        if (!SD.rename(TMP_PATH, CFG_PATH)) {
+            request->send(500, "text/plain", "rename failed, new values are in /wdgwars.tmp");
+            return;
+        }
+        Serial.printf("FILES: wrote %s (ssid=%s, apikey-len=%u)\n",
+                      CFG_PATH, ssid.c_str(), apikey.length());
         AsyncWebServerResponse* r = request->beginResponse(303, "text/plain", "saved");
         r->addHeader("Location", "/wdgcfg?saved=1");
         request->send(r);
@@ -611,10 +717,17 @@ void FileServerAP::init() {
     active = true;
     state = State::INIT;
     total_get_count = total_dl_count = total_rm_count = 0;
-    last_request_path = "";
+    setLastRequestPath("");
     last_error_msg = "";
     center_press_start_ms = 0;
     center_was_pressed = false;
+    // Whatever BACK is doing right now counts as already seen -- the key that
+    // opened this view may still be down. See handleCenterLongPressForExit().
+    #if defined(RIG_HAS_NAV) && defined(RIG_HAS_BACK)
+      back_was_pressed = RigInput::down(RigInput::BACK);
+    #else
+      back_was_pressed = false;
+    #endif
     last_display_refresh_ms = 0;
 
     loadOptionalSettings();
@@ -625,8 +738,23 @@ void FileServerAP::init() {
         return;
     }
 
-    server = new AsyncWebServer(HTTP_PORT);
-    registerRoutes();
+    // The server, its handlers and the auth middleware are allocated on the
+    // first entry into this mode and then kept for the rest of the process.
+    // The old shape did `new AsyncWebServer` per session and never deleted it,
+    // so every entry leaked a server plus seven handlers holding std::function
+    // closures — a few KB each time out of ~150-200 KB free. Deleting on exit
+    // is what the empirical teardown order in deinit() warns about (AsyncTCP
+    // still fires cleanup events into the server after the AP goes down), so
+    // the fix is to stop allocating instead of to start deleting: one
+    // allocation total, no per-session growth, and nothing to free late.
+    // Routes capture `this`, which is a global, so they stay valid across
+    // sessions; only the credentials change, and those live in the middleware.
+    if (!server) {
+        server = new AsyncWebServer(HTTP_PORT);
+        server->addMiddleware(&http_auth);
+        registerRoutes();
+    }
+    configureAuth();
     server->begin();
 
     state = State::AP_UP;
@@ -644,8 +772,11 @@ void FileServerAP::deinit() {
     // connection cleanup events into the still-registered server lambdas,
     // and one of those touches state the new ordering nukes first.
     //
-    // New order: server end -> generous drain delay -> WiFi off. The
-    // server is never deleted (AsyncWebServer leak ~few KB per session).
+    // New order: server end -> generous drain delay -> WiFi off. The server
+    // object itself deliberately stays alive and keeps its routes; init()
+    // reuses it, so nothing has to be freed here while AsyncTCP may still be
+    // dispatching into it. AsyncServer::end() drops the listening pcb and
+    // begin() recreates it, so the reuse is a supported cycle.
     Serial.println("FILES: deinit step 1: server->end()");
     if (server) server->end();
     Serial.println("FILES: deinit step 2: drain 250ms");
@@ -686,17 +817,40 @@ void FileServerAP::runTick() {
 // re-printing with setTextColor(fg, bg) so the new glyphs overwrite the
 // old ones in place — no clear-then-redraw flicker.
 
-static const int FS_X = 4;
-static const int FS_LH = 16;
-static const int FS_Y_TITLE = 28;
-static const int FS_Y_SSID = 60;
-static const int FS_Y_PASS = FS_Y_SSID + FS_LH;
-static const int FS_Y_IP = FS_Y_PASS + FS_LH;
-static const int FS_Y_CHAN = FS_Y_IP + FS_LH;
-static const int FS_Y_CLIENTS = FS_Y_CHAN + FS_LH + 8;
-static const int FS_Y_COUNTS = FS_Y_CLIENTS + FS_LH;
-static const int FS_Y_LAST = FS_Y_COUNTS + FS_LH + 8;
-static const int FS_Y_FOOTER = 300;
+// These were written for the 240x320 Marauder panel and nothing else. On the
+// Cardputer ADV's 240x135 the credentials ran off the bottom and the footer sat
+// at y=300 on a 135 px screen -- so the one line telling the operator how to
+// leave was the one line they could not see. The tall numbers below are exactly
+// what they always were; only the compact column is new.
+//
+// Gaps are 8 px on the tall panel and 4 on the short one: on 135 px a group
+// separator that costs a whole extra line is a separator that pushes a line off
+// the screen.
+static const int FS_GAP       = RigTheme::COMPACT ? 4 : 8;
+static const int FS_X         = 4;
+static const int FS_LH        = RigTheme::COMPACT ? 10 : 16;
+static const int FS_Y_TITLE   = RigTheme::COMPACT ?  2 : 28;
+static const int FS_Y_SSID    = RigTheme::COMPACT ? 22 : 60;
+static const int FS_Y_PASS    = FS_Y_SSID + FS_LH;
+static const int FS_Y_IP      = FS_Y_PASS + FS_LH;
+static const int FS_Y_CHAN    = FS_Y_IP + FS_LH;
+static const int FS_Y_LOGIN   = FS_Y_CHAN + FS_LH;
+static const int FS_Y_CLIENTS = FS_Y_LOGIN + FS_LH + FS_GAP;
+static const int FS_Y_COUNTS  = FS_Y_CLIENTS + FS_LH;
+static const int FS_Y_LAST    = FS_Y_COUNTS + FS_LH + FS_GAP;
+// The tall panel keeps its literal 300 rather than SCREEN_HEIGHT - FOOTER_H,
+// which is 298. The two look identical and the derived form is tidier, but the
+// V7 is the field device: this change set exists to fix the ADV, not to move
+// anything on a screen that was already right.
+static const int FS_Y_FOOTER  = RigTheme::COMPACT ? (SCREEN_HEIGHT - RigTheme::FOOTER_H)
+                                                  : 300;
+
+// How much of a request path fits on the "Last:" line. Font 1 is 6 px per
+// character, and "Last: " eats six of them. The old code trimmed to 30 and
+// padded to 36, i.e. 42 columns on a 40-column screen -- it wrapped onto the
+// next line on *both* panels, which on the short one is the line above the
+// footer. Derive it instead of guessing.
+static const int FS_PATH_COLS = (SCREEN_WIDTH / 6) - 6;
 
 void FileServerAP::drawStaticFrame() {
     #ifdef HAS_SCREEN
@@ -717,6 +871,11 @@ void FileServerAP::drawStaticFrame() {
         } else {
             // Constant-for-the-session values: print once here so
             // renderDisplay() never touches them.
+            //
+            // The PSK and the login are generated per device, so this screen
+            // is the only place the operator can read them. That is the point:
+            // whoever can see the display is standing at the rig. Nothing here
+            // is derivable from what the AP puts on the air.
             display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
             display_obj.tft.setCursor(FS_X, FS_Y_SSID);
             display_obj.tft.printf("SSID:  %s", ssid.c_str());
@@ -726,15 +885,33 @@ void FileServerAP::drawStaticFrame() {
             display_obj.tft.printf("IP:    %s", WiFi.softAPIP().toString().c_str());
             display_obj.tft.setCursor(FS_X, FS_Y_CHAN);
             display_obj.tft.printf("Chan:  %u", (unsigned)AP_CHANNEL);
+            display_obj.tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+            display_obj.tft.setCursor(FS_X, FS_Y_LOGIN);
+            display_obj.tft.printf("Login: %s / %s", http_user.c_str(), http_password.c_str());
         }
 
+        // Name the keys this board actually has. "CENTER hold" is meaningless on
+        // a keyboard, and it was the only instruction on screen.
         display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
         display_obj.tft.setCursor(FS_X, FS_Y_FOOTER);
         #ifdef HAS_TOUCH
             display_obj.tft.print("[tap screen to exit]");
         #else
-            display_obj.tft.print("[CENTER hold to exit]");
+            display_obj.tft.print(RIG_HINT_EXIT);
         #endif
+    #else
+        // Screenless target: the console is the only channel the operator has
+        // for the generated credentials, so this is the one place they go to
+        // serial. It is not free — whoever has the USB port has them — but a
+        // build that cannot show its own PSK cannot be used at all, and USB
+        // access already means standing at the rig.
+        if (state == State::AP_FAILED) {
+            Serial.printf("FILES: AP start failed: %s\n", last_error_msg.c_str());
+        } else {
+            Serial.printf("FILES: SSID=%s PSK=%s login=%s/%s\n",
+                          ssid.c_str(), password.c_str(),
+                          http_user.c_str(), http_password.c_str());
+        }
     #endif
 }
 
@@ -762,12 +939,52 @@ void FileServerAP::renderDisplay() {
         // width so a shorter follow-up path doesn't leave stale glyphs.
         display_obj.tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
         display_obj.tft.setCursor(FS_X, FS_Y_LAST);
-        String shown = last_request_path;
-        if (shown.length() > 30) shown = "..." + shown.substring(shown.length() - 27);
-        // Pad to 36 chars so any previous value gets fully overwritten.
-        while (shown.length() < 36) shown += ' ';
+        // Take a private copy under the lock first — everything below runs on
+        // the loop task and must not walk storage the HTTP task can rewrite.
+        char path_copy[LAST_PATH_MAX];
+        copyLastRequestPath(path_copy, sizeof(path_copy));
+        String shown = path_copy;
+        if ((int)shown.length() > FS_PATH_COLS)
+            shown = "..." + shown.substring(shown.length() - (FS_PATH_COLS - 3));
+        // Pad to the full width so any previous value gets fully overwritten.
+        while ((int)shown.length() < FS_PATH_COLS) shown += ' ';
         display_obj.tft.printf("Last: %s", shown.c_str());
     #endif
+}
+
+// =========================================================================
+// Cross-task display state
+// =========================================================================
+// The route handlers run on the AsyncTCP task, renderDisplay() on the loop
+// task. The two used to share an Arduino String, and String assignment frees
+// the old buffer before it publishes the new pointer — so a browse that
+// happened to land between the display's read of the pointer and its read of
+// the bytes handed the TFT freed heap: garbage glyphs at best, a
+// LoadProhibited panic at worst. Normal use triggers it, no attacker needed.
+//
+// Fixed storage removes the free entirely, and the spinlock removes the torn
+// read on top of it. Both sides are a bounded memcpy, so holding a critical
+// section across them is cheap.
+void FileServerAP::setLastRequestPath(const char* p) {
+    if (!p) p = "";
+    size_t n = strlen(p);
+    if (n > LAST_PATH_MAX - 1) n = LAST_PATH_MAX - 1;
+    portENTER_CRITICAL(&last_path_mux);
+    memcpy(last_request_path, p, n);
+    last_request_path[n] = '\0';
+    portEXIT_CRITICAL(&last_path_mux);
+}
+
+void FileServerAP::copyLastRequestPath(char* dst, size_t n) const {
+    if (!dst || n == 0) return;
+    size_t i = 0;
+    portENTER_CRITICAL(&last_path_mux);
+    while (i < n - 1 && last_request_path[i] != '\0') {
+        dst[i] = last_request_path[i];
+        i++;
+    }
+    portEXIT_CRITICAL(&last_path_mux);
+    dst[i] = '\0';
 }
 
 void FileServerAP::handleCenterLongPressForExit() {
@@ -781,11 +998,30 @@ void FileServerAP::handleCenterLongPressForExit() {
             } else if ((now - center_press_start_ms) >= FILESERVER_EXIT_HOLD_MS) {
                 Serial.println("FILES: long-press -> exit");
                 deinit();
+                return;
             }
         } else {
             center_was_pressed = false;
             center_press_start_ms = 0;
         }
+
+        #ifdef RIG_HAS_BACK
+          // A board with a dedicated back key should not have to learn a hold --
+          // and on the ADV the hold was the *only* way out while the line saying
+          // so was drawn below the bottom of the screen. Same shape as Rig Mode.
+          //
+          // Edge-triggered, and seeded from the live key state in init(): ESC may
+          // still be down from whatever menu opened this view, and an unseeded
+          // detector reads that as a fresh press and closes on the first frame.
+          const bool back_now = RigInput::down(RigInput::BACK);
+          if (back_now && !back_was_pressed) {
+              back_was_pressed = true;
+              Serial.println("FILES: BACK -> exit");
+              deinit();
+              return;
+          }
+          if (!back_now) back_was_pressed = false;
+        #endif
     #endif
 }
 

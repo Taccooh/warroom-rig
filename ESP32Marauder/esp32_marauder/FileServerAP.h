@@ -21,12 +21,24 @@ class AsyncWebServer;
 // wardrive_core_*.log and any other artefacts (PCAPs, settings, etc.) the
 // user has accumulated, without popping the microSD.
 //
+// Everything behind this AP is sensitive: the card carries the complete
+// wardrive movement history and /wdgwars.txt with the upload credentials in
+// cleartext. The rig also runs unattended in a vehicle. So the AP is not the
+// only gate — every HTTP route sits behind HTTP authentication as well, and
+// neither the PSK nor the HTTP password is a compile-time constant.
+//
 // Defaults:
 //   SSID:     warroom-rig-Files-XXXX  (XXXX = last 2 bytes of STA MAC, hex)
-//   Password: warroomrig              (changeable via /fileserver.txt on SD)
+//   Password: 12 random characters, generated on first use and kept in NVS
+//   Login:    user "rig" + 10 random characters, same storage
 //   IP:       192.168.4.1
+// Both generated secrets are printed on the TFT for the whole session — that
+// is where the operator reads them. They are deliberately NOT derived from
+// the MAC: the AP broadcasts its BSSID in every beacon, so anything derived
+// from the MAC is computable by a passive listener and would be no secret at
+// all.
 //
-// HTTP routes:
+// HTTP routes (all of them require authentication):
 //   GET  /              HTML directory listing of "/"
 //   GET  /ls?path=/dir  HTML directory listing of an arbitrary dir
 //   GET  /dl?path=/p    File download (Content-Disposition: attachment)
@@ -40,7 +52,12 @@ class AsyncWebServer;
 //
 // Optional override file /fileserver.txt on SD (plain key=value):
 //     ssid=My-Custom-SSID
-//     pass=My-Custom-Pw  (>= 8 chars, else default is used)
+//     pass=My-Custom-Pw    (>= 8 chars, else the generated PSK is used)
+//     user=my-login        (HTTP user, default "rig")
+//     httppass=my-secret   (HTTP password, else the generated one is used)
+//     auth=digest|basic    (default digest; basic only exists as an escape
+//                           hatch for a browser that cannot do digest, and
+//                           leaks the password to anyone else on the AP)
 // File is read once at init(); missing values fall back to the defaults
 // above.
 // =========================================================================
@@ -55,6 +72,9 @@ public:
         DONE,
     };
 
+    // Longest "Last: ..." path kept for the display, terminator included.
+    static const size_t LAST_PATH_MAX = 40;
+
     void init();
     void runTick();
     void deinit();
@@ -66,6 +86,9 @@ private:
 
     String ssid;
     String password;
+    String http_user;
+    String http_password;
+    bool http_auth_digest = true;
     String last_error_msg;
 
     AsyncWebServer* server = nullptr;
@@ -73,19 +96,32 @@ private:
     uint32_t last_display_refresh_ms = 0;
     uint32_t center_press_start_ms = 0;
     bool center_was_pressed = false;
+    bool back_was_pressed = false;   // edge state for the BACK-key exit
 
     uint32_t total_get_count = 0;
     uint32_t total_dl_count = 0;
     uint32_t total_rm_count = 0;
-    String last_request_path;
+
+    // Written by the route handlers (AsyncTCP task), read by renderDisplay()
+    // (loop task). This used to be an Arduino String, which is a
+    // use-after-free across those two tasks: String::operator= frees the old
+    // buffer before the new pointer is published, so the 1 Hz display refresh
+    // could dereference heap the HTTP task had just returned. Fixed storage
+    // never moves, and the accessors below serialise the two sides.
+    char last_request_path[LAST_PATH_MAX] = {0};
 
     // Lifecycle helpers.
     void loadOptionalSettings();
+    void ensureSecrets();        // fill in whatever /fileserver.txt did not
     bool startSoftAP();
     void registerRoutes();
+    void configureAuth();
     void drawStaticFrame();      // one-shot — title + constant labels
     void renderDisplay();        // periodic — dynamic values only
     void handleCenterLongPressForExit();
+
+    void setLastRequestPath(const char* p);
+    void copyLastRequestPath(char* dst, size_t n) const;
 
     // Path safety: any incoming `path` query arg must start with `/` and
     // must not contain `..` segments. Returns "" on rejection.

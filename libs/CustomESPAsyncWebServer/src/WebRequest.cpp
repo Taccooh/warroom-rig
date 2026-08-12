@@ -8,6 +8,33 @@
 #include "literals.h"
 #include <cstring>
 
+// This version of the library has no request-size ceiling anywhere: not a
+// _maxContentLength on the request, not a cap in _parsePlainPostChar(), which
+// appends the body byte by byte into the Arduino String _temp. Any handler
+// registered with an onRequest callback is non-trivial, so the body IS parsed,
+// and one unauthenticated POST of a few hundred KB without an '&' in it grows
+// _temp past the free heap. On a Marauder V7 that is ~150-200 KB, and what
+// actually breaks is not this parser but everything downstream of it: WiFi,
+// TFT and SD allocations start failing. The same shape exists one level up, in
+// _onData()'s header accumulator, where a request line with no '\n' in it
+// grows _temp exactly as freely — it checks reserve() for failure, which only
+// reports the exhaustion after the damage is done.
+//
+// The two caps below are the whole patch. They are deliberately request-level
+// and not per-handler: this firmware only ever serves the file-server AP, whose
+// legitimate bodies are a path or three short form fields, so the ceilings are
+// orders of magnitude above anything real. Both are #ifndef so a sketch that
+// needs bigger requests can raise them from its build flags instead of editing
+// vendored code. Multipart uploads are unaffected in shape — they stream to
+// handleUpload() — but they are subject to the body ceiling too, which is the
+// intended behaviour here since nothing in this firmware uploads. [warroom-rig]
+#ifndef WARROOM_RIG_MAX_LINE_BYTES
+#define WARROOM_RIG_MAX_LINE_BYTES 4096u
+#endif
+#ifndef WARROOM_RIG_MAX_BODY_BYTES
+#define WARROOM_RIG_MAX_BODY_BYTES 8192u
+#endif
+
 static inline bool isParamChar(char c) {
   return ((c) && ((c) != '{') && ((c) != '[') && ((c) != '&') && ((c) != '='));
 }
@@ -140,6 +167,15 @@ void AsyncWebServerRequest::_onData(void *buf, size_t len) {
         }
       }
       if (i == len) {  // No new line, just add the buffer in _temp
+        // [warroom-rig] Header/request line ceiling — see the note at the top
+        // of this file. Nothing legitimate reaches this, and a client that
+        // never sends '\n' would otherwise eat the heap one packet at a time.
+        if (_temp.length() + len > WARROOM_RIG_MAX_LINE_BYTES) {
+          async_ws_log_e("Request line exceeds WARROOM_RIG_MAX_LINE_BYTES");
+          _parseState = PARSE_REQ_FAIL;
+          abort();
+          return;
+        }
         char ch = str[len - 1];
         str[len - 1] = 0;
         if (!_temp.reserve(_temp.length() + len)) {
@@ -676,7 +712,18 @@ void AsyncWebServerRequest::_parseLine() {
         String response(T_HTTP_100_CONT);
         _client->write(response.c_str(), response.length());
       }
-      if (_contentLength) {
+      // [warroom-rig] Body ceiling — see the note at the top of this file.
+      // Checked here because this is the first point where Content-Length is
+      // known and the handler is attached, and refusing before PARSE_REQ_BODY
+      // means not one body byte is ever accumulated. Any bytes the client
+      // still sends afterwards land in _onData() while _parseState is
+      // PARSE_REQ_END, where both branches skip them.
+      if (_contentLength > WARROOM_RIG_MAX_BODY_BYTES) {
+        async_ws_log_e("Body exceeds WARROOM_RIG_MAX_BODY_BYTES");
+        _parseState = PARSE_REQ_END;
+        send(413, T_text_plain, "request body too large");
+        _send();
+      } else if (_contentLength) {
         _parseState = PARSE_REQ_BODY;
       } else {
         _parseState = PARSE_REQ_END;
