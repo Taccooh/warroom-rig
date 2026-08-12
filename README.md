@@ -66,13 +66,33 @@ directly.
 
 | Board | Screen | Input | Status |
 |---|---|---|---|
-| **Marauder V7 / V7.1** | 240×320 portrait | 5 buttons | daily driver, tested |
-| **Marauder V8** | 240×320 portrait | touch | builds, lightly used |
-| **M5Stack Cardputer ADV** | 240×135 landscape | keyboard (TCA8418) | **builds, never run on hardware** |
+| **Marauder V7** | 240×320 portrait | 5 buttons | daily driver, tested |
+| **Marauder V7.1** | 240×320 portrait | 5 buttons | same board family as V7; builds green, never run on hardware |
+| **Marauder V8** (ESP32-C5) | 240×320 portrait | touch | **unfinished port — does not work, gated off in `configs.h`** |
+| **M5Stack Cardputer ADV** | 240×135 landscape | keyboard (TCA8418) | boots and runs; display, keyboard, SD and Rig Mode exercised on hardware |
 
 That is the list. `configs.h` used to carry ESP32Marauder's whole 27-board
 matrix; the boards this project does not build for have been removed from it,
 so finding your board there now means something.
+
+Marauder V7.1 shares the V7 pin map and is meant to be a first-class target, but
+it was not actually building. Its config was missing the two toolchain-selector
+macros (`HAS_NIMBLE_2`, `HAS_IDF_3`) that point the compile at the modern IDF and
+NimBLE paths this tree pins, so it dropped into legacy branches that do not exist
+here and the build died. Those macros are now set to match V7 and the target
+compiles. Nobody has run the result on a V7.1 board, so the pin map is still only
+inherited, not confirmed — but "does not build" is no longer true of it.
+
+Marauder V8 (ESP32-C5) is in the table because its name is wired through the
+whole config, but it is **not a working target**, and the build refuses it unless
+you define `WARROOM_RIG_ALLOW_BROKEN_V8`. The port was never finished, and the
+gaps were confirmed against the shipped binary rather than merely suspected: the
+config still describes a classic-ESP32 Marauder, so the default panel pins land
+on the C5's flash bus, the GPS UART sits on top of the USB-CDC console pins, and
+touch is declared as the only input while `TOUCH_CS` is `-1`, so nothing on
+screen responds. `configs.h` spells out all four problems at the V8 gate. Nobody
+here has the V8 schematic, so the pin map cannot be guessed from this end —
+finishing it needs the board in hand and the two things any port needs (below).
 
 The Cardputer ADV is a port, not a tested target — nobody working on this repo
 owns one. It compiles, its geometry is checked arithmetically, and every input
@@ -99,9 +119,17 @@ warning never prints. Any translation unit that reaches the library before
 the board's — which on the Cardputer meant two `.cpp` files laid out a 240×135
 screen as though it were 240×320, in a build that was green from end to end.
 
-The Marauder targets get their panel from `libs/CustomTFT_eSPI/User_Setup.h`,
-which is the library's own mechanism and is left alone. The Cardputer needs a
-different panel, and it takes it from **build flags** (see RELEASING.md) rather
+The Marauder targets get their panel from
+`libs/CustomTFT_eSPI/User_Setup_Select.h`, whose single uncommented include is
+`User_Setup_dual_nrf24.h` — the OG Marauder ILI9341 config (CS 17, DC 26, MOSI 23,
+SCLK 18, BL 32). That is the file to open when you are auditing a Marauder
+target's pins. `User_Setup.h` is **not** included by anything: it sits in the
+library looking like the answer, and reading it tells you nothing about what the
+build actually uses. That gap is exactly how the V8's pin problem stayed
+invisible — the real config was one `#include` away from where anyone would look.
+The classic-ESP32 boards (V7/V7.1) want that ILI9341 config and it is left alone.
+The Cardputer needs a different panel, and it takes it from **build flags** (see
+RELEASING.md) rather
 than from a `tft_setup.h` in the sketch: TFT_eSPI reads such a file before its
 own setup and then considers the configuration finished *for every target*, so a
 file added for one board silently reconfigures the others. That is not
@@ -144,15 +172,20 @@ $ARDUINO_CLI compile \
     "$SRC"
 ```
 
-The V8 differs only in FQBN and board define:
+There is also a V8 (ESP32-C5) target, but it does **not** currently produce a
+working device, and the build refuses it unless you also pass
+`-DWARROOM_RIG_ALLOW_BROKEN_V8`. See the Hardware section above and the V8 gate
+in `configs.h` for exactly what is wrong. The recipe below differs from V7 only
+in FQBN and board define, and is here for whoever picks the port up — not to ship:
 
 ```
 --fqbn "esp32:esp32:esp32c5:CDCOnBoot=cdc,PartitionScheme=huge_app,FlashSize=4M"
---build-property "compiler.cpp.extra_flags=-DMARAUDER_V8 $MODULES"
+--build-property "compiler.cpp.extra_flags=-DMARAUDER_V8 -DWARROOM_RIG_ALLOW_BROKEN_V8 $MODULES"
 ```
 
 The Cardputer ADV additionally carries its panel configuration in the flags,
-because its screen is not the one `User_Setup.h` describes — see
+because its screen is not the one `User_Setup_dual_nrf24.h` describes (the ILI9341
+panel the classic-ESP32 Marauder targets use) — see
 [RELEASING.md](RELEASING.md) for the full command. The ESP32 core has no
 separate ADV entry; the plain Cardputer board is the same ESP32-S3 family and
 the differences are menu options.

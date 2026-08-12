@@ -5,7 +5,7 @@ independent tag tracks in this one repo:
 
 | Track | Runs on | Tag scheme | Internal version |
 |---|---|---|---|
-| **Core (hub)** | Marauder v7 (ESP32) · Marauder v8 (ESP32-C5, touch) | `core-vX.Y` | `WARROOM_RIG_VERSION` |
+| **Core (hub)** | Marauder v7 (ESP32, tested) · Cardputer ADV (boots and runs, see below) · Marauder v7.1 (builds, never run) · Marauder v8 (ESP32-C5 — unfinished, gated off) | `core-vX.Y` | `WARROOM_RIG_VERSION` |
 | **Node** | Waveshare C5-Zero (ESP32-C5), NodeMCU-32 | `node-v<koko>-warroom.N` | `FIRMWARE_VERSION` |
 
 They version independently: a node fix must not force a core release, and vice
@@ -55,11 +55,47 @@ esptool.py --chip esp32 -p <PORT> write_flash 0x0 warroom-rig-core-vX.Y-merged.b
 
 or `arduino-cli upload -p <PORT> --fqbn esp32:esp32:d32 ...`.
 
-### Marauder v8 variant (ESP32-C5, touch)
+### Marauder v7.1 variant
 
-Same hub firmware, built for the touch-only ESP32-C5. Selected by `-DMARAUDER_V8`
+Same board family, same FQBN, same everything — swap `-DMARAUDER_V7` for
+`-DMARAUDER_V7_1` in the recipe above and nothing else changes.
+
+It compiles green, but it has never been run on a v7.1 board: the pin map in
+`configs.h` is inherited from the v7 and unconfirmed. Do not put a v7.1 image in
+a release without someone booting one first. (For a long time it did not even
+build — its config was missing `HAS_NIMBLE_2` / `HAS_IDF_3`, so it fell into
+legacy IDF branches this tree does not carry. That is fixed.)
+
+### Marauder v8 variant (ESP32-C5, touch) — UNFINISHED, DO NOT SHIP
+
+This target does **not** currently produce a working device, and the build
+refuses it unless you also define `WARROOM_RIG_ALLOW_BROKEN_V8`. It is documented
+here so whoever has the hardware can finish the port, not so it can be released.
+Do **not** cut a `core-` tag that carries a V8 image until the problems below are
+actually fixed on hardware. What is wrong — all confirmed against the shipped
+binary, all because the config still describes a classic-ESP32 Marauder instead
+of the C5:
+
+- **Panel pins land on the C5's flash bus.** The build passes no panel flags, so
+  TFT_eSPI takes `libs/CustomTFT_eSPI/User_Setup_dual_nrf24.h` — the OG Marauder
+  ILI9341 config (CS 17, DC 26, MOSI 23, SCLK 18, BL 32). On the ESP32-C5 those
+  are flash/MSPI pins, and GPIO32 does not exist at all (29 GPIOs). The C5 needs
+  its own panel config in build flags, the way the Cardputer does — but nobody
+  here has the V8 schematic, so the pins are unknown. Do not guess them.
+- **GPS UART on the USB pins.** `GPS_TX 14 / GPS_RX 13` are the C5's `USB_DP` /
+  `USB_DM`; with `CDCOnBoot=cdc` the console loses its own pins mid-setup.
+- **Touch input is dead.** `HAS_TOUCH` is the only input path, but the active TFT
+  setup has `TOUCH_CS -1`, so `getTouch()` never returns true — the UI accepts
+  nothing.
+- **No real battery gauge.** V8 names an I2C bus but no gauge. It used to inherit
+  the auto-detect fallback (now fixed in `configs.h` so it no longer blind-writes
+  an AXP192 on the C5's flash pins), but it still has no gauge of its own.
+
+`configs.h` documents the same four at the V8 gate. Selected by `-DMARAUDER_V8`
 instead of `-DMARAUDER_V7`; the touch UIs (home console, Rig Mode session
-buttons, Upload file picker) are all `#ifdef HAS_TOUCH` and only exist here.
+buttons, Upload file picker) are all `#ifdef HAS_TOUCH` and only exist here — but
+per the touch note above, none of them can be driven until `TOUCH_CS` is real.
+The recipe below is kept for that work; it will not ship a usable image as-is.
 
 Key differences from the v7 build:
 - **Chip/FQBN:** `esp32:esp32:esp32c5`. `CDCOnBoot=cdc` is mandatory (else the
@@ -77,7 +113,7 @@ Key differences from the v7 build:
 $ARDUINO_CLI compile \
   --fqbn "esp32:esp32:esp32c5:CDCOnBoot=cdc,PartitionScheme=huge_app,FlashSize=4M" \
   $LIB_ARGS \
-  --build-property "compiler.cpp.extra_flags=-DMARAUDER_V8 -DMARAUDER_CORE_MODE -DMARAUDER_WDGWARS_UPLOAD -DMARAUDER_FILE_SERVER_AP" \
+  --build-property "compiler.cpp.extra_flags=-DMARAUDER_V8 -DWARROOM_RIG_ALLOW_BROKEN_V8 -DMARAUDER_CORE_MODE -DMARAUDER_WDGWARS_UPLOAD -DMARAUDER_FILE_SERVER_AP" \
   --output-dir ./out-v8 \
   ESP32Marauder/esp32_marauder/esp32_marauder.ino
 ```
@@ -92,8 +128,10 @@ python -m esptool --chip esp32c5 -p <PORT> -b 921600 \
 
 ### M5Stack Cardputer ADV variant (ESP32-S3, keyboard)
 
-Same hub firmware for the Cardputer ADV. **Not tested on hardware** — see the
-Hardware section of `README.md` before shipping this to anyone.
+Same hub firmware for the Cardputer ADV. It builds, flashes, boots and runs:
+display, keyboard, SD and Rig Mode with a four-node fleet have all been exercised
+on the hardware. Treat it as newer and less travelled than the v7 rather than as
+unproven.
 
 Key differences from the v7 build:
 - **Chip/FQBN:** `esp32:esp32:m5stack_cardputer`. The core has no ADV entry; the
@@ -111,6 +149,19 @@ Key differences from the v7 build:
   still reach the library: `platform.txt` has one `recipe.cpp.o.pattern` and it
   carries `compiler.cpp.extra_flags`. Build with `--clean` when changing them,
   or a cached TFT_eSPI object compiled under the old configuration survives.
+  `-DTFT_RGB_ORDER=1` is not optional: a 135×240 panel gets `CGRAM_OFFSET`
+  defined for it automatically, and TFT_eSPI then defaults the colour order to
+  **BGR**. Upstream's `User_Setup_marauder_m5cardputer_adv.h` sets RGB; leaving
+  the flag off swaps red and blue on everything.
+- **Needs a TFT_eSPI patched for the S3 on modern IDF.** `SPI_PORT` was `FSPI`,
+  which is Arduino's bus enum (0 on the S3), not the peripheral number the IDF
+  register macros want. `REG_SPI_BASE(0)` returns 0 on IDF 5.5, so every SPI
+  register write went to its bare offset — `*(0x10) = SPI_USR_MOSI` panics on
+  the first command `tft.init()` sends. TFT_eSPI's own `REG_SPI_BASE` fallback
+  is `#ifndef`-guarded and no longer fires because IDF defines the macro now.
+  Vendored copy sets `SPI_PORT 2`; see the `[warroom-rig]` note in
+  `libs/CustomTFT_eSPI/Processors/TFT_eSPI_ESP32_S3.h`. Only the S3 target
+  reaches that file, so the V7 and V8 are untouched.
 - **PSRAM off.** The ADV config defines no `HAS_PSRAM`, so the firmware never
   allocates from it. Enabling it only adds an early-boot init that hangs if the
   module's line mode (QSPI vs OPI) does not match the build — risk with no
@@ -126,6 +177,7 @@ Key differences from the v7 build:
 
 ```bash
 PANEL="-DUSER_SETUP_LOADED -DST7789_DRIVER -DTFT_WIDTH=135 -DTFT_HEIGHT=240 \
+-DTFT_RGB_ORDER=1 \
 -DTFT_MOSI=35 -DTFT_SCLK=36 -DTFT_CS=37 -DTFT_DC=34 -DTFT_RST=33 -DTFT_BL=38 \
 -DTFT_BACKLIGHT_ON=HIGH -DLOAD_GLCD -DLOAD_FONT2 -DLOAD_FONT4 -DLOAD_FONT6 \
 -DLOAD_FONT7 -DLOAD_FONT8 -DLOAD_GFXFF -DSMOOTH_FONT \
@@ -141,6 +193,27 @@ $ARDUINO_CLI compile --clean \
 ```
 
 Image is ~1.68 MB (53 % of the 3 MB app slot).
+
+**Panel flags.** The recipe drives the panel with `-DST7789_DRIVER` and
+`-DSPI_FREQUENCY=40000000`. These are now confirmed on hardware: the ADV boots,
+`tft.init()` returns, and the UI is legible with the right colours. The vendored
+upstream setup for this board
+(`libs/CustomTFT_eSPI/User_Setup_marauder_m5cardputer_adv.h`) uses
+`ST7789_2_DRIVER` and `20000000` instead; that pair is untested here and is the
+first knob to turn if a different ADV unit shows a blank or garbled panel. The
+two drivers send different init command lists, and the higher clock is more than
+some panels of this class tolerate, so it is a real fallback rather than a
+formality.
+
+**What actually blocked the first bring-up was neither of those**, and it is
+worth knowing before chasing the panel: on the S3, TFT_eSPI's `spi` is the global
+Arduino `SPI`, and `SPIClass::begin()` returns `true` without doing anything when
+the object already holds a bus handle — which it can while the bus is stopped and
+`SPI_CLK_GATE` is zero. The master clock stays gated, every command sets its busy
+bit, nothing clears it, and the boot dies inside `tft_Write_8()` with the
+backlight on. `Display::RunSetup()` now calls `SPI.end()` before `SPI.begin()` for
+this target, which is correct from either state. A blank ADV that is *silent on
+the console too* is this, not the panel flags.
 
 ---
 

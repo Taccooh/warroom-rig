@@ -34,8 +34,16 @@
   // Spannt einen WPA2-SoftAP + HTTP-Server auf der SD-Karte auf. Praktisch
   // im Feld um Wardrive-Logs (oder beliebige andere Dateien) per Browser
   // zu ziehen ohne SD-Karte rauspopeln zu muessen.
-  // Default-SSID: warroom-rig-Files-XXXX, Default-PW: warroomrig. Beides via
-  // optionalem /fileserver.txt auf SD ueberschreibbar.
+  // Default-SSID: warroom-rig-Files-XXXX. Das WPA2-Passwort ist KEINE Konstante
+  // mehr: es wird beim ersten Start pro Geraet zufaellig erzeugt und in NVS
+  // abgelegt, zusammen mit einem zweiten Geheimnis fuer die HTTP-Anmeldung.
+  // Beides steht im Betrieb auf dem Display. Grund: der PSK stand vorher als
+  // Literal in einem oeffentlichen Repo, und dahinter lag keine Authentifizierung
+  // — wer den String kannte, konnte die komplette SD-Karte lesen, inklusive
+  // /wdgwars.txt mit Heim-WLAN-Passwort und API-Key. Aus der MAC ableiten waere
+  // keine Loesung: die BSSID steht in jedem Beacon.
+  // Ueberschreibbar via optionalem /fileserver.txt auf SD (Keys: ssid, pass,
+  // user, httppass, auth).
   //#define MARAUDER_FILE_SERVER_AP
 
   //#define MARAUDER_CARDPUTER_ADV
@@ -154,7 +162,19 @@
     #define HAS_TEMP_SENSOR
     #define HAS_GPS
     #define HAS_PSRAM
-    //#define HAS_NIMBLE_2
+
+    // Toolchain selectors, not hardware -- the same two macros V7 carries a few
+    // lines up, and V7.1 was the one target missing them. This tree pins one
+    // arduino-cli, one ESP32 core (3.3.4, IDF 5.5) and one vendored NimBLE (2.x)
+    // for every build, so only the modern API paths can compile. Without these,
+    // V7.1 falls into the legacy branches that do not exist here: WiFiScan.h dies
+    // on esp_event_send_internal / g_wifi_feature_caps, and esp32_marauder.ino
+    // reaches for esp_spiram_init(), which IDF 5.5 renamed to esp_psram_init().
+    // That is why V7.1 never actually built while V7 did. Set to match V7.
+    // Verified: the target now compiles green. It has still never been run on a
+    // V7.1 board, so the pin map below is inherited from V7 and unconfirmed.
+    #define HAS_NIMBLE_2
+    #define HAS_IDF_3
 #endif
 
 
@@ -933,10 +953,25 @@
 
 
 #else
+       // Auto-detect fallback for a board that never named its gauge. Today that
+       // is V7.1, and anything built with WARROOM_RIG_ALLOW_UNTESTED_BOARD.
+       //
+       // IP5306 and MAX17048 are I2C parts. BatteryInterface::RunSetup() probes
+       // each by address on the board's real I2C bus (I2C_SDA/I2C_SCL) and only
+       // latches on when the chip actually answers, so defining both is a
+       // harmless "try one address, then the other" -- normal auto-detect.
+       //
+       // HAS_AXP192 was defined here too and does not belong: its probe is not
+       // address-guarded. axp192_obj.begin() unconditionally does
+       // Wire1.begin(21, 22) and then blind-writes PMU registers, whether or not
+       // anything is on that bus. No board that reaches this fallback carries an
+       // AXP192, and GPIO21/22 is a used bus on the boards that do reach it --
+       // the GPS UART on V7.1, the C5's flash CLK/MOSI on V8. So the fallback was
+       // firing a second I2C master onto live pins on every board that landed in
+       // it. Dropped. The two address-guarded I2C probes above stay.
        // #define HAS_AXP2101
        #define HAS_IP5306
        #define HAS_MAX1704X
-       #define HAS_AXP192
 #endif
 
 #endif
@@ -1059,13 +1094,30 @@
 #endif
 
 // =========================================================================
+// warroom-rig: boot trace
+// =========================================================================
+// Enable with -DWARROOM_BOOT_TRACE. Emits a marker before and after each step
+// of setup(), so a boot that stops partway can be placed from the serial log
+// alone. setup() is long and mostly silent, and a hang in it is indexed from
+// the outside as "the device is dead" -- same symptom as a panic, same symptom
+// as a boot loop. Compiles to nothing when the flag is absent.
+#ifdef WARROOM_BOOT_TRACE
+  #define WR_MARK(s) do { Serial.print(F("[BOOT] ")); Serial.println(F(s)); \
+                          Serial.flush(); delay(8); } while (0)
+#else
+  #define WR_MARK(s) do {} while (0)
+#endif
+
+// =========================================================================
 // warroom-rig: supported-hardware gate
 // =========================================================================
 // This file described ESP32Marauder's whole hardware matrix -- 27 selectable
-// targets -- while the rig builds for four. The others compiled, booted, and
-// then behaved in ways nobody here had ever seen, which is worse than not
-// building at all: it looks like support. They are gone from this file now, so
-// the gate mostly catches the case of no target being defined.
+// targets -- while the rig builds for three (V7, V7.1, Cardputer ADV) plus a V8
+// that is named everywhere but is still an unfinished port, gated off in its own
+// block below. The others compiled, booted, and then behaved in ways nobody here
+// had ever seen, which is worse than not building at all: it looks like support.
+// They are gone from this file now, so the gate mostly catches the case of no
+// target being defined.
 //
 // The Cardputer is why the gate exists, and now also why it is not a wall.
 // Someone found the Marauder config in this repo, reasonably assumed their
@@ -1083,10 +1135,61 @@
 #if !defined(WARROOM_RIG_ALLOW_UNTESTED_BOARD)
 #if !defined(MARAUDER_V7) && !defined(MARAUDER_V7_1) && !defined(MARAUDER_V8) && \
     !defined(MARAUDER_CARDPUTER_ADV)
-    #error "warroom-rig supports Marauder V7 / V7.1 / V8 and the M5 Cardputer ADV. \
+    #error "warroom-rig builds for Marauder V7 / V7.1 and the M5 Cardputer ADV \
+(V8 is recognized but gated off as an unfinished port -- see the block below). \
 No board target is defined, or the one defined is not one of those -- the rig's UI \
-and input paths exist only for those four, and other targets can boot with no \
-working input at all. To port anyway, define WARROOM_RIG_ALLOW_UNTESTED_BOARD. \
+and input paths exist only for those, and other targets can boot with no working \
+input at all. To port anyway, define WARROOM_RIG_ALLOW_UNTESTED_BOARD. \
 See README.md, section Hardware."
 #endif
+#endif
+
+// =========================================================================
+// warroom-rig: Marauder V8 (ESP32-C5) is NOT a finished port
+// =========================================================================
+// V8 is a real board and its name is wired through this whole config, but the
+// port was never actually done -- and this is verified broken against the
+// shipped binary, not doubted on paper. Building it yields an image that fights
+// its own flash during setup and then boots into a UI that accepts no input.
+// Until someone with the hardware AND the schematic finishes it, the gate
+// refuses V8 the same way the block above refuses an unlisted board. Define
+// WARROOM_RIG_ALLOW_BROKEN_V8 to build it anyway and pick up the work. Four
+// concrete things are wrong, all of them because the config still describes a
+// classic-ESP32 Marauder rather than the C5:
+//
+//   1. Panel / pins. The V8 build passes no panel flags, so TFT_eSPI falls back
+//      to libs/CustomTFT_eSPI/User_Setup_Select.h, whose single uncommented
+//      include is User_Setup_dual_nrf24.h -- the OG Marauder ILI9341 panel
+//      (CS 17, DC 26, MOSI 23, SCLK 18, BL 32). On the ESP32-C5 those are
+//      MSPI/flash territory (flash CS0=16, MISO=17, WP=18, HD=20, CLK=21,
+//      MOSI=22) and GPIO32 does not exist at all (SOC_GPIO_PIN_COUNT is 29). The
+//      shipped image really does drive flash /WP and flash Q during setup. The
+//      C5 needs its own panel config in build flags, the way the Cardputer ADV
+//      does -- but we do not have the V8 schematic, so the right pins are
+//      unknown from this end. Do not guess them.
+//   2. Battery gauge. V8 sets I2C_SCL 4 / I2C_SDA 5 but no gauge macro, so it
+//      used to land in the auto-detect fallback and pull in HAS_AXP192, whose
+//      probe blind-writes on Wire1.begin(21, 22) -- the C5's flash CLK/MOSI.
+//      The fallback no longer defines HAS_AXP192 (see the battery block above),
+//      so that particular landmine is defused, but V8 still has no real gauge.
+//   3. GPS UART. GPS_TX 14 / GPS_RX 13 collide with the C5 variant header's
+//      USB_DP 14 / USB_DM 13. With CDCOnBoot=cdc (mandatory on the C5, see
+//      RELEASING.md) that hands the USB-CDC console's own pins to the GPS driver
+//      mid-setup.
+//   4. Input. The V8 block sets HAS_TOUCH and leaves HAS_BUTTONS commented, so
+//      touch is the only input path -- but the active TFT setup defines
+//      TOUCH_CS -1, so the touch controller is never selected and getTouch()
+//      can only ever return false. The board boots into a UI nothing can drive.
+//
+// None of these is guessable without the board in hand; this note exists so the
+// person who has one starts from the right four problems instead of finding them
+// again the hard way. See README.md, section Hardware.
+#if defined(MARAUDER_V8) && !defined(WARROOM_RIG_ALLOW_BROKEN_V8)
+    #error "warroom-rig: MARAUDER_V8 is not a finished port and is disabled. The \
+ESP32-C5 config still describes a classic-ESP32 Marauder: the default panel pins \
+land on the C5's flash bus, the GPS UART sits on the USB-CDC pins, and touch input \
+is wired to TOUCH_CS -1 so nothing on screen responds. This was verified against \
+the shipped binary, not guessed. To work on the port with the hardware in hand, \
+define WARROOM_RIG_ALLOW_BROKEN_V8. See the note directly above this line and \
+README.md, section Hardware."
 #endif
