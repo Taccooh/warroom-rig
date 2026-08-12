@@ -9,6 +9,7 @@ namespace {
 
     Keyboard_Class kb;
     uint32_t last_refresh_ms = 0;
+    bool     had_keys_down = false;
 
     // Keys are identified by their position in the 4x14 matrix, not by the
     // character they produce. getKey() returns the *shifted* value while shift,
@@ -41,8 +42,14 @@ namespace {
         kb.updateKeyList();
         // Modifier state is only needed by text entry, and rebuilding it
         // allocates three vectors. Skip it when nothing is held, which is the
-        // overwhelmingly common case while the rig just sits there scanning.
-        if (kb.isPressed()) kb.updateKeysState();
+        // overwhelmingly common case while the rig just sits there scanning --
+        // but run it once more on the poll that goes empty. updateKeysState()
+        // is what resets the state buffer, so skipping it outright leaves the
+        // last shift latched after the key is released and getKey() keeps
+        // handing out shifted characters from then on.
+        const bool keys_down = kb.isPressed();
+        if (keys_down || had_keys_down) kb.updateKeysState();
+        had_keys_down = keys_down;
     }
 
     bool heldAt(const KeyPos &p) {

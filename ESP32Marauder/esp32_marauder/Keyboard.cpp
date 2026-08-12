@@ -51,8 +51,17 @@ void Keyboard_Class::updateKeyList()
 
     if (!_tca_initialized) return;
 
-    // Drain TCA8418 FIFO when interrupt signals new events
-    if (_tca_interrupt) {
+    // Drain the TCA8418 FIFO. The interrupt alone is not a sufficient trigger:
+    // INT is edge-triggered and INT_STAT is cleared below, *after* the drain, so
+    // an event that lands between the last getEvent() and that write leaves the
+    // FIFO non-empty with the pin already deasserted and no further falling edge
+    // coming. If the lost event is a release, the key stays in
+    // _tca_pressed_keys forever -- the rig would read it as held, and every
+    // "wait until the user lets go" loop in the UI would never end. Asking the
+    // controller how many events it is actually holding costs one register read
+    // per poll (RigInput rate-limits those to one per 5 ms) and closes the
+    // window instead of narrowing it.
+    if (_tca_interrupt || _tca8418.available()) {
         _tca_interrupt = false;
 
         int evt;
@@ -129,7 +138,9 @@ String Keyboard_Class::getPressedKeysString() {
     String pressed = "";
 
     for (auto &keyCoor : _key_list_buffer) {
-        pressed += getKey(keyCoor);
+        // Cast, or String picks operator+=(unsigned char) and appends the code
+        // point as decimal digits instead of the character it stands for.
+        pressed += (char)getKey(keyCoor);
     }
 
     return pressed;
@@ -144,6 +155,17 @@ bool Keyboard_Class::isKeyPressed(char c)
             if (getKey(i) == c)
                 return true;
         }
+    }
+    return false;
+}
+
+// Unshifted lookup -- see the declaration for why control keys need it.
+bool Keyboard_Class::isPhysicalKeyPressed(uint8_t v)
+{
+    for (const auto &i : _key_list_buffer)
+    {
+        if (getKeyValue(i).value_first == v)
+            return true;
     }
     return false;
 }
@@ -242,6 +264,12 @@ void Keyboard_Class::updateKeysState()
             _keys_state_buffer.hid_keys.push_back(k);
             continue;
         }
+        // Everything that reaches here is printable ASCII -- the modifiers and
+        // the three function keys were taken out of the list above -- but the
+        // table only has 128 entries and the map can hold values up to 0xff, so
+        // say so rather than rely on the loop above staying complete.
+        if (k >= sizeof(_kb_asciimap))
+            continue;
         uint8_t key = _kb_asciimap[k];
         if (key)
         {

@@ -37,10 +37,21 @@ struct Point2D_t
     int y;
 };
 
+// One byte here carries two different alphabets: printable ASCII for the
+// letter keys, and the modifier/function codes from Keyboard_def.h, which
+// start at 0x80 and run up to KEY_FN's 0xff. Upstream stored both in a `char`,
+// which is signed on Xtensa (the ADV build passes no -funsigned-char), so the
+// modifiers came back out as -128..-126 and -1. Every test of the shape
+// `value_first == KEY_LEFT_SHIFT` then compared -127 against 129 and was
+// always false: shift, ctrl, alt and fn could not register at all, so no
+// capital or shifted symbol was typeable, and those keys fell through to the
+// HID branch where _kb_asciimap[128] got indexed with 0x80..0xff -- up to 127
+// bytes past the end, every poll, for as long as the key was held. Unsigned is
+// the type the values were always written as.
 struct KeyValue_t
 {
-    const char value_first;
-    const char value_second;
+    const uint8_t value_first;
+    const uint8_t value_second;
 };
 
 const KeyValue_t _key_value_map[4][14] = {{{'`', '~'},
@@ -183,6 +194,19 @@ public:
     uint8_t isPressed();
     bool isChange();
     bool isKeyPressed(char c);
+
+    // Is this physical key down, whatever the modifiers say.
+    //
+    // isKeyPressed() resolves through shift, which is what text entry wants and
+    // exactly what a control binding does not. Two of the function codes are
+    // also printable characters that live on this keyboard: KEY_BACKSPACE is
+    // 0x2a, which is '*' -- shift+8; KEY_ENTER is 0x28, which is '(' -- shift+9.
+    // A control test against the resolved value therefore fires on those two
+    // chords. The reverse holds as well: while shift is held every key resolves
+    // to value_second, so ';' reads as ':' and the nav bindings stop matching
+    // at all. Comparing value_first asks the question control bindings mean.
+    bool isPhysicalKeyPressed(uint8_t v);
+
     String getPressedKeysString();
 
     void updateKeysState();

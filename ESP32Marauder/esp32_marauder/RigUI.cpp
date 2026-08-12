@@ -164,7 +164,15 @@ void RigUI::runSessionMenu() {
     auto& tft = display_obj.tft;
 
     // Let go of the R press that opened this, or it reads as cancel immediately.
-    while (RigInput::down(RigInput::RIGHT)) delay(10);
+    // Bounded, because "the key is still down" is a claim about hardware: a
+    // release event lost to a FIFO overflow, or an I2C controller that stops
+    // answering, leaves that key latched and this loop would own the rig for
+    // good. A second is far longer than anyone holds a menu key and short
+    // enough that the modal still feels like it opened, and the worst case if
+    // the key really is stuck is that the panel closes itself again.
+    const uint32_t release_deadline = millis() + 1000;
+    while (RigInput::down(RigInput::RIGHT) && (int32_t)(millis() - release_deadline) < 0)
+        delay(10);
     delay(50);
 
     const bool live = wardrive_core_obj.isCollecting();
@@ -243,7 +251,10 @@ void RigUI::runSessionMenu() {
         bool d = (RigInput::down(RigInput::DOWN));
         if (d && !pd) { sel = (sel + 1) % nopts; dirty = true; }
         pd = d;
-        bool lr = (RigInput::down(RigInput::LEFT)) || (RigInput::down(RigInput::RIGHT));
+        // Cancel: either sideways key, or BACK where the board has one -- the
+        // hint at the foot of this panel says "ESC cancel".
+        bool lr = (RigInput::down(RigInput::LEFT)) || (RigInput::down(RigInput::RIGHT)) ||
+                  (RigInput::down(RigInput::BACK));
         if (lr && !plr) { done = true; }
         plr = lr;
         bool c = (RigInput::down(RigInput::SELECT));
@@ -414,8 +425,12 @@ void RigUI::handleMenuInput(uint32_t currentTime) {
         nav_dn_down = d;
 
         // LEFT — up one level. The tree also has explicit "Back" rows; both work.
-        #ifdef RIG_HAS_LEFT
-        bool l = (RigInput::down(RigInput::LEFT));
+        // So does BACK, on the boards that have one. The footer under this list
+        // reads "ESC back" on the keyboard, and ESC did nothing here: the hint
+        // was advertising a key nobody read. down(BACK) is a compile-time false
+        // on the button boards, so this costs them nothing.
+        #if defined(RIG_HAS_LEFT) || defined(RIG_HAS_BACK)
+        bool l = (RigInput::down(RigInput::LEFT) || RigInput::down(RigInput::BACK));
         if (l && !nav_l_down) {
             nav_l_down = true;
             if (m->parentMenu) {
@@ -448,6 +463,26 @@ void RigUI::handleMenuInput(uint32_t currentTime) {
             Menu* before = m;
             MenuNode node = m->list->get(m->selected);
             if (node.callable) node.callable();
+
+            // A blocking view the node opened -- the mini keyboard, a pick list
+            // -- may have closed on the same key this screen now reads as
+            // "back". Adopt whatever is held at this instant as already seen,
+            // the way swallow_c_release does for the centre key, or one press
+            // would back out of two levels.
+            nav_l_down = (RigInput::down(RigInput::LEFT) || RigInput::down(RigInput::BACK));
+
+            // The centre key needs the identical treatment, and did not have it.
+            // The mini keyboard confirms on ENTER, which *is* SELECT here, and
+            // returns while it is still held: c_down went false on the release
+            // that got us into this branch, so the next poll reads the key that
+            // is still down as a brand new press and fires this node a second
+            // time when it finally comes up. Adopt it as in-progress and drop
+            // its release, exactly as the long-press exit path does.
+            if (RigInput::down(RigInput::SELECT)) {
+                c_down = true;
+                c_press_start_ms = currentTime;
+                swallow_c_release = true;
+            }
 
             if (wifi_scan_obj.currentScanMode != WIFI_SCAN_OFF) {
                 running_is_legacy = true;      // legacy views keep the old dispatcher

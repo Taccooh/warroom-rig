@@ -239,6 +239,11 @@ class MenuFunctions
       // keyboard for navigation. One owner, borrowed by everyone else.
       void updateKeyboard();
       bool isKeyPressed(char c);
+      // Control-key variant: matches the physical key regardless of modifiers.
+      // Every nav / confirm / cancel / backspace test uses this one; only text
+      // entry wants the shift-resolved isKeyPressed(). See
+      // Keyboard_Class::isPhysicalKeyPressed().
+      bool isControlKeyPressed(uint8_t v);
     #endif
 
   public:

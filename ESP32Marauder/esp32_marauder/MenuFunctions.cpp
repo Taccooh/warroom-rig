@@ -454,7 +454,7 @@ void MenuFunctions::main(uint32_t currentTime)
     #if (C_BTN >= 0) && !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
       bool c_btn_press = c_btn.justPressed();
     #elif defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
-      bool c_btn_press = this->isKeyPressed('(');
+      bool c_btn_press = this->isControlKeyPressed(KEY_ENTER);
     #endif
 
     #ifndef HAS_ILI9341
@@ -775,7 +775,7 @@ void MenuFunctions::main(uint32_t currentTime)
           #if (U_BTN >= 0)
             if (u_btn.justPressed()) {
           #elif defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
-            if (this->isKeyPressed(';')) {
+            if (this->isControlKeyPressed(';')) {
           #endif
               if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_OFF) ||
                   (wifi_scan_obj.currentScanMode == WIFI_CONNECTED) ||
@@ -847,7 +847,7 @@ void MenuFunctions::main(uint32_t currentTime)
       #if (D_BTN >= 0)
       if (d_btn.justPressed()){
       #elif defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
-      if (this->isKeyPressed('.')){
+      if (this->isControlKeyPressed('.')){
       #endif
         if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_OFF) ||
             (wifi_scan_obj.currentScanMode == WIFI_CONNECTED) ||
@@ -923,7 +923,7 @@ void MenuFunctions::main(uint32_t currentTime)
       #if (R_BTN >= 0)
       if (r_btn.justPressed()) {
       #elif defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
-      if (this->isKeyPressed('/')) {
+      if (this->isControlKeyPressed('/')) {
       #endif
         if (wifi_scan_obj.currentScanMode == WIFI_SCAN_OFF) {
           #ifndef HAS_DUAL_BAND
@@ -953,7 +953,7 @@ void MenuFunctions::main(uint32_t currentTime)
       #if (L_BTN >= 0)
       if (l_btn.justPressed()) {
       #elif defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
-      if (this->isKeyPressed(',')) {
+      if (this->isControlKeyPressed(',')) {
       #endif
         if (wifi_scan_obj.currentScanMode == WIFI_SCAN_OFF) {
           #ifndef HAS_DUAL_BAND
@@ -974,7 +974,7 @@ void MenuFunctions::main(uint32_t currentTime)
       #endif
 
       #if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
-      if (this->isKeyPressed('`') || this->isKeyPressed(KEY_BACKSPACE)) {
+      if (this->isControlKeyPressed('`') || this->isControlKeyPressed(KEY_BACKSPACE)) {
         if (wifi_scan_obj.currentScanMode == WIFI_SCAN_OFF) {
           if (current_menu->parentMenu != NULL) {
             this->changeMenu(current_menu->parentMenu, true);
@@ -1160,8 +1160,13 @@ void MenuFunctions::updateStatusBar()
 
   if ((current_channel != wifi_scan_obj.old_channel) || (status_changed)) {
     wifi_scan_obj.old_channel = current_channel;
+    // The bar is filled SCREEN_WIDTH wide, so everything in it has to be placed
+    // against SCREEN_WIDTH too. TFT_WIDTH is the panel in its native portrait
+    // orientation and reads 135 on the landscape ADV, which crammed GPS, CH,
+    // DRAM and SD into the left half and left a hole before the battery (which
+    // sits at SB_BAT_X and was right all along).
     #if defined(MARAUDER_MINI) || defined(MARAUDER_M5STICKC) || defined(MARAUDER_REV_FEATHER) || defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV) || defined(MARAUDER_MINI_V3)
-      display_obj.tft.fillRect(TFT_WIDTH/4, 0, CHAR_WIDTH * 6, STATUS_BAR_WIDTH, STATUSBAR_COLOR);
+      display_obj.tft.fillRect(SCREEN_WIDTH/4, 0, CHAR_WIDTH * 6, STATUS_BAR_WIDTH, STATUSBAR_COLOR);
     #elif defined(HAS_DUAL_BAND)
       display_obj.tft.fillRect(50, 0, (CHAR_WIDTH / 2) * 8, STATUS_BAR_WIDTH, STATUSBAR_COLOR);
     #else
@@ -1172,7 +1177,7 @@ void MenuFunctions::updateStatusBar()
     #endif
 
     #ifdef HAS_MINI_SCREEN
-      display_obj.tft.drawString("CH:" + (String)wifi_scan_obj.old_channel, TFT_WIDTH/4, 0, 1);
+      display_obj.tft.drawString("CH:" + (String)wifi_scan_obj.old_channel, SCREEN_WIDTH/4, 0, 1);
     #endif
   }
 
@@ -1191,7 +1196,11 @@ void MenuFunctions::updateStatusBar()
   #endif
 
   #ifdef HAS_MINI_SCREEN
-    display_obj.tft.drawString(String(getDRAMUsagePercent()) + "%", TFT_WIDTH/1.75, 0, 1);
+    // Its own clear rect: nothing else covers this spot, and the string shrinks
+    // (100% -> 42%), so without one the tail of the previous reading stays on
+    // screen. Five characters of room for a four-character worst case.
+    display_obj.tft.fillRect(SCREEN_WIDTH/1.75, 0, CHAR_WIDTH * 5, STATUS_BAR_WIDTH, STATUSBAR_COLOR);
+    display_obj.tft.drawString(String(getDRAMUsagePercent()) + "%", SCREEN_WIDTH/1.75, 0, 1);
   #endif
   }
 
@@ -1245,7 +1254,7 @@ void MenuFunctions::updateStatusBar()
 
   #ifdef HAS_MINI_SCREEN
     display_obj.tft.setTextColor(the_color, STATUSBAR_COLOR, true);
-    display_obj.tft.drawString("SD", TFT_WIDTH - 12, 0, 1);
+    display_obj.tft.drawString("SD", SCREEN_WIDTH - 12, 0, 1);
   #endif
 
   // WiFi connection status stuff
@@ -1343,7 +1352,10 @@ void MenuFunctions::drawStatusBar()
     wifi_scan_obj.old_channel = wifi_scan_obj.set_channel;
 
   #ifdef HAS_MINI_SCREEN
-    display_obj.tft.fillRect(43, 0, TFT_WIDTH * 0.21, STATUS_BAR_WIDTH, STATUSBAR_COLOR);
+    // Same origin and width as the text below it. It used to clear x=43..70
+    // while the string was drawn from TFT_WIDTH/4 = 33, so the rect and the
+    // glyphs it was meant to erase only partly overlapped.
+    display_obj.tft.fillRect(SCREEN_WIDTH/4, 0, CHAR_WIDTH * 6, STATUS_BAR_WIDTH, STATUSBAR_COLOR);
   #else
     display_obj.tft.fillRect(50, 0, TFT_WIDTH * 0.21, STATUS_BAR_WIDTH, STATUSBAR_COLOR);
   #endif
@@ -1352,7 +1364,7 @@ void MenuFunctions::drawStatusBar()
   #endif
 
   #ifdef HAS_MINI_SCREEN
-    display_obj.tft.drawString("CH:" + (String)wifi_scan_obj.old_channel, TFT_WIDTH/4, 0, 1);
+    display_obj.tft.drawString("CH:" + (String)wifi_scan_obj.old_channel, SCREEN_WIDTH/4, 0, 1);
   #endif
 
   // RAM Stuff
@@ -1369,7 +1381,7 @@ void MenuFunctions::drawStatusBar()
   #endif
 
   #ifdef HAS_MINI_SCREEN
-    display_obj.tft.drawString(String(getDRAMUsagePercent()) + "%", TFT_WIDTH/1.75, 0, 1);
+    display_obj.tft.drawString(String(getDRAMUsagePercent()) + "%", SCREEN_WIDTH/1.75, 0, 1);
   #endif
 
 
@@ -1424,7 +1436,7 @@ void MenuFunctions::drawStatusBar()
 
   #ifdef HAS_MINI_SCREEN
     display_obj.tft.setTextColor(the_color, STATUSBAR_COLOR);
-    display_obj.tft.drawString("SD", TFT_WIDTH - 12, 0, 1);
+    display_obj.tft.drawString("SD", SCREEN_WIDTH - 12, 0, 1);
   #endif
 
   // WiFi connection status stuff
@@ -1572,6 +1584,16 @@ void MenuFunctions::updateKeyboard()
 bool MenuFunctions::isKeyPressed(char c)
 {
   bool pressed = RigInput::keyboard().isKeyPressed(c);
+
+  if (pressed)
+    delay(200);
+
+  return pressed;
+}
+
+bool MenuFunctions::isControlKeyPressed(uint8_t v)
+{
+  bool pressed = RigInput::keyboard().isPhysicalKeyPressed(v);
 
   if (pressed)
     delay(200);
@@ -2786,12 +2808,15 @@ void MenuFunctions::RunSetup()
       });
       this->addNodes(&gpsPOIMenu, "Mark POI", TFTCYAN, GPS_MENU, [this]() {
         wifi_scan_obj.currentScanMode = GPS_POI;
-        display_obj.tft.setCursor(0, TFT_HEIGHT / 2);
+        // Vertical middle of the *screen*. TFT_HEIGHT is the panel in portrait,
+        // so on the landscape ADV it read 240 and put the confirmation at y=120
+        // on a 135 px screen -- pinned to the bottom edge instead of centred.
+        display_obj.tft.setCursor(0, SCREEN_HEIGHT / 2);
         display_obj.clearScreen();
         if (wifi_scan_obj.RunGPSInfo(true, false, true))
-          display_obj.showCenterText("POI Logged", TFT_HEIGHT / 2);
+          display_obj.showCenterText("POI Logged", SCREEN_HEIGHT / 2);
         else
-          display_obj.showCenterText("POI Log Failed", TFT_HEIGHT / 2);
+          display_obj.showCenterText("POI Log Failed", SCREEN_HEIGHT / 2);
         wifi_scan_obj.currentScanMode = WIFI_SCAN_OFF;
         delay(2000);
         this->changeMenu(&gpsPOIMenu, true);
@@ -2878,8 +2903,15 @@ void MenuFunctions::RunSetup()
     wifi_scan_obj.current_mini_kb_ssid = "";
 
     #ifdef HAS_MINI_KB
+      // Wait out a centre button that is still down on entry, so its release
+      // does not get read as the first keystroke of this screen -- but with a
+      // deadline. justReleased() is an edge, and an edge already consumed
+      // somewhere else never arrives again: the wait would then spin here for
+      // good with the screen frozen, which is precisely the failure the
+      // unbounded serial wait in setup() used to produce.
       if (c_btn.isHeld()) {
-        while (!c_btn.justReleased())
+        const uint32_t held_wait_start = millis();
+        while (!c_btn.justReleased() && (millis() - held_wait_start < 1000))
           delay(1);
       }
     #endif
@@ -3049,30 +3081,52 @@ void MenuFunctions::RunSetup()
           #endif
 
           #ifdef MARAUDER_CARDPUTER_ADV
+            // Nothing else refreshes the key buffer in here. MenuFunctions::main()
+            // is the usual caller of updateKeyboard(), and this loop is what
+            // locks it out; RigInput::down() -- the other refresher -- is never
+            // reached on this path either. Without this the buffer stays exactly
+            // as it was on entry, which is empty (RigUI fires the menu node on
+            // ENTER *release*), no key ever registers, neither exit test can
+            // fire, and Add SSID / Join WiFi spin here until the watchdog or the
+            // battery runs out.
+            this->updateKeyboard();
+
             const char *ascii = RigInput::keyboard()._ascii_list;
             for (int i = 0; i < 95; i++) {
-              // '(' is not the character it looks like here: KEY_ENTER is 0x28,
-              // which is ASCII '('. Skipping it (and the esc key '`') keeps
-              // confirm and cancel out of the typed text.
-              if ((ascii[i] != '(') && (ascii[i] != '`')) {
+              // '(' and '*' used to be skipped here. KEY_ENTER is 0x28 (ASCII
+              // '(') and KEY_BACKSPACE is 0x2a (ASCII '*'), and the control
+              // tests below compared characters, so the confirm and delete keys
+              // were indistinguishable from shift+9 and shift+8: backspace
+              // appended a '*' and then deleted it again, which is to say it did
+              // nothing. Those tests now ask for the physical key, so both
+              // characters are typeable again and only '`' still has to go --
+              // it is the cancel key itself, and typing it would leave the
+              // screen it typed on.
+              if (ascii[i] != '`') {
                 if (this->isKeyPressed(ascii[i])) {
                   pressed = true;
                   wifi_scan_obj.current_mini_kb_ssid.concat(ascii[i]);
                 }
-                if (this->isKeyPressed(KEY_BACKSPACE)) {
-                  pressed = true;
-                  wifi_scan_obj.current_mini_kb_ssid.remove(wifi_scan_obj.current_mini_kb_ssid.length() - 1);
-                }
               }
             }
 
+            // Backspace is one key, so it is tested once. It used to sit inside
+            // the loop above, where a single press deleted up to 95 characters
+            // and isKeyPressed()'s 200 ms debounce turned that into a twenty
+            // second freeze -- which reads as the same hang this branch already
+            // had.
+            if (this->isControlKeyPressed(KEY_BACKSPACE)) {
+              pressed = true;
+              wifi_scan_obj.current_mini_kb_ssid.remove(wifi_scan_obj.current_mini_kb_ssid.length() - 1);
+            }
+
             if (!do_pass) {
-              if (this->isKeyPressed('`')) {
+              if (this->isControlKeyPressed('`')) {
                 this->changeMenu(targetMenu->parentMenu, true);
                 return wifi_scan_obj.current_mini_kb_ssid;
               }
 
-              if (this->isKeyPressed('(')) {
+              if (this->isControlKeyPressed(KEY_ENTER)) {
                 if (!do_pass) {
                   if (wifi_scan_obj.current_mini_kb_ssid != "") {
                     pressed = true;
@@ -3084,12 +3138,12 @@ void MenuFunctions::RunSetup()
               }
             }
             else {
-              if (this->isKeyPressed('(')) {
+              if (this->isControlKeyPressed(KEY_ENTER)) {
                 this->changeMenu(targetMenu->parentMenu, true);
                 return wifi_scan_obj.current_mini_kb_ssid;
               }
 
-              if (this->isKeyPressed('`')) {
+              if (this->isControlKeyPressed('`')) {
                 this->changeMenu(targetMenu->parentMenu, true);
                 return "";
               }
@@ -3269,6 +3323,15 @@ void MenuFunctions::RunSetup()
             #endif
             pressed = false;
           }
+
+          // Every other branch blocks inside its own button wait, so the loop
+          // paces itself. The keyboard branch has no such wait and would spin
+          // flat out, starving the WiFi and BT tasks that share this core.
+          // Matches RigInput's poll interval -- faster buys nothing, the
+          // controller has no new events to give.
+          #ifdef MARAUDER_CARDPUTER_ADV
+            delay(5);
+          #endif
         }
       //#endif
     #endif
@@ -3418,17 +3481,23 @@ float MenuFunctions::graphScaleCheckSmall(const uint8_t array[CHAN_PER_PAGE]) {
   return 1.0;
 }
 
+// The graph is baselined at the bottom of the screen and spans its full width,
+// which is SCREEN_HEIGHT and SCREEN_WIDTH. TFT_HEIGHT/TFT_WIDTH describe the
+// panel in portrait, so on the landscape ADV they had these lines starting at
+// y=240 on a 135 px screen -- every Max and Average line was drawn off the
+// bottom while renderGraphUI(), which is SCREEN_*-based, printed a legend for
+// them. The bars themselves were already drawn against the right numbers.
 void MenuFunctions::drawMaxLine(int16_t value, uint16_t color) {
-  display_obj.tft.drawLine(0, TFT_HEIGHT - (value * this->_graph_scale), TFT_WIDTH, TFT_HEIGHT - (value * this->_graph_scale), color);
-  display_obj.tft.setCursor(0, TFT_HEIGHT - (value * this->_graph_scale));
+  display_obj.tft.drawLine(0, SCREEN_HEIGHT - (value * this->_graph_scale), SCREEN_WIDTH, SCREEN_HEIGHT - (value * this->_graph_scale), color);
+  display_obj.tft.setCursor(0, SCREEN_HEIGHT - (value * this->_graph_scale));
   display_obj.tft.setTextColor(color, TFT_BLACK);
   display_obj.tft.setTextSize(1);
   display_obj.tft.println((String)(value / BASE_MULTIPLIER));
 }
 
 void MenuFunctions::drawMaxLine(uint8_t value, uint16_t color) {
-  //display_obj.tft.drawLine(0, TFT_HEIGHT - (value * this->_graph_scale), TFT_WIDTH, TFT_HEIGHT - (value * this->_graph_scale), color);
-  display_obj.tft.setCursor(0, TFT_HEIGHT - (value * this->_graph_scale));
+  //display_obj.tft.drawLine(0, SCREEN_HEIGHT - (value * this->_graph_scale), SCREEN_WIDTH, SCREEN_HEIGHT - (value * this->_graph_scale), color);
+  display_obj.tft.setCursor(0, SCREEN_HEIGHT - (value * this->_graph_scale));
   display_obj.tft.setTextColor(color, TFT_BLACK);
   display_obj.tft.setTextSize(1);
   display_obj.tft.println((String)value);
@@ -3499,8 +3568,13 @@ void MenuFunctions::drawGraph(int16_t *values) {
         display_obj.tft.drawLine(i, TFT_HEIGHT, i, TFT_HEIGHT - GRAPH_VERT_LIM, TFT_BLACK);
         display_obj.tft.drawLine(i, TFT_HEIGHT, i, TFT_HEIGHT - (values[i] * this->_graph_scale), TFT_CYAN);
       #else
-        display_obj.tft.drawLine(i, TFT_WIDTH, i, TFT_WIDTH - GRAPH_VERT_LIM, TFT_BLACK);
-        display_obj.tft.drawLine(i, TFT_WIDTH, i, TFT_WIDTH - (values[i] * this->_graph_scale), TFT_CYAN);
+        // Spelled SCREEN_HEIGHT rather than TFT_WIDTH. Same number on this
+        // board -- SCREEN_HEIGHT *is* TFT_WIDTH here -- but one of the two names
+        // says "the bottom of the screen" and the other says "the narrow side
+        // of the panel", and reading the wrong one is what put the Max and
+        // Average lines below the display.
+        display_obj.tft.drawLine(i, SCREEN_HEIGHT, i, SCREEN_HEIGHT - GRAPH_VERT_LIM, TFT_BLACK);
+        display_obj.tft.drawLine(i, SCREEN_HEIGHT, i, SCREEN_HEIGHT - (values[i] * this->_graph_scale), TFT_CYAN);
         display_obj.tft.setCursor(0, 0);
         display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
       #endif
@@ -3512,9 +3586,9 @@ void MenuFunctions::drawGraph(int16_t *values) {
         display_obj.tft.drawLine(i, TFT_HEIGHT, i, TFT_HEIGHT - GRAPH_VERT_LIM, TFT_RED);
         display_obj.tft.setCursor(i, TFT_HEIGHT - GRAPH_VERT_LIM);
       #else
-        display_obj.tft.drawLine(i, TFT_WIDTH, i, TFT_WIDTH - GRAPH_VERT_LIM, TFT_BLACK);
-        display_obj.tft.drawLine(i, TFT_WIDTH, i, TFT_WIDTH - GRAPH_VERT_LIM, TFT_RED);
-        display_obj.tft.setCursor(i, TFT_WIDTH - GRAPH_VERT_LIM);
+        display_obj.tft.drawLine(i, SCREEN_HEIGHT, i, SCREEN_HEIGHT - GRAPH_VERT_LIM, TFT_BLACK);
+        display_obj.tft.drawLine(i, SCREEN_HEIGHT, i, SCREEN_HEIGHT - GRAPH_VERT_LIM, TFT_RED);
+        display_obj.tft.setCursor(i, SCREEN_HEIGHT - GRAPH_VERT_LIM);
       #endif
       display_obj.tft.setTextColor(TFT_BLACK, TFT_RED);
       display_obj.tft.setTextSize(1);
@@ -3523,7 +3597,10 @@ void MenuFunctions::drawGraph(int16_t *values) {
   }
 
   this->drawMaxLine(maxValue, TFT_GREEN); // Draw max
-  this->drawMaxLine((int16_t)(total / TFT_WIDTH), TFT_ORANGE); // Draw average
+  // Divide by the same count the loop above summed. TFT_WIDTH is 135 on the
+  // ADV while the loop walks SCREEN_WIDTH = 240 samples, which reported the
+  // average as roughly 1.78x what it was.
+  this->drawMaxLine((int16_t)(total / width), TFT_ORANGE); // Draw average
 }
 
 void MenuFunctions::renderGraphUI(uint8_t scan_mode) {
@@ -3806,7 +3883,12 @@ void MenuFunctions::drawRigHome(int only)
     // icon glyph. Marauder XBitmaps carry the glyph in the 0-bits, the surround
     // in the 1-bits -> paint 1-bits in the card fill (blend away) and 0-bits in
     // the icon colour, so the symbol floats cleanly with no black box.
-    tft.drawXBitmap(RigTheme::COMPACT ? 16 : 20, y + (chh - ICON_H) / 2,
+    //
+    // x=20 on both layouts. The compact one used 16, which put the bitmap's
+    // left two columns on top of the accent bar at 14..17 -- and the bitmap is
+    // drawn after it, so the "selected" marker came out half painted over. The
+    // glyph still clears the title at x=44 by two pixels.
+    tft.drawXBitmap(20, y + (chh - ICON_H) / 2,
                     menu_icons[cicons[i]],
                     ICON_W, ICON_H, fill, s ? C_GOLD : C_GOLDD);
     tft.setTextColor(s ? C_GOLD : C_INK, fill);

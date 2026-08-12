@@ -26,11 +26,20 @@
 // instead of the GPIO. On the button boards down() inlines to the same
 // digitalRead comparison it replaces, so the V7 image is unaffected.
 //
-// down() is safe to call from a busy-wait loop. The keyboard backend refreshes
-// its own cache on read (rate-limited), so `while (down(SELECT)) delay(10);`
-// terminates instead of spinning forever on stale state. That property is why
-// this exposes button *state* rather than events: it makes replacing a
-// digitalRead a local edit rather than a redesign of the loop around it.
+// down() is meant to be called from a busy-wait loop: the keyboard backend
+// refreshes its own cache on read (rate-limited), and that refresh polls the
+// TCA8418's event counter rather than waiting for the controller's interrupt,
+// so a release event cannot be stranded in the FIFO by a missed edge. That
+// property is why this exposes button *state* rather than events: it makes
+// replacing a digitalRead a local edit rather than a redesign of the loop
+// around it.
+//
+// It is not a guarantee, though, and callers should not write one. A release
+// dropped by a FIFO overflow leaves the key latched until the next overflow
+// recovery, and a controller that stops answering on I2C answers "still held"
+// forever. Every `while (down(x))` in the tree therefore carries a deadline;
+// waiting on a key is a convenience, and no convenience is worth a rig that
+// stops responding in the field.
 // =========================================================================
 
 // Which backend this board gets. RIG_HAS_NAV means "there is a directional
@@ -72,12 +81,18 @@
   #define RIG_HINT_HOME  "arrows move   ENTER select"
   #define RIG_HINT_EXIT  "hold ENTER or press ESC to leave"
   #define RIG_HINT_SESSION "RIGHT: session   ESC: exit"
+  #define RIG_HINT_PICK    "ENTER pick  <- all  -> go  ESC exit"
+  #define RIG_HINT_CONFIRM "ENTER to upload"
+  #define RIG_HINT_CANCEL  "ESC to cancel"
 #else
   #define RIG_HINT_LIST  "U/D move   C select   L back"
   #define RIG_HINT_MODAL "U/D move   C confirm   L/R cancel"
   #define RIG_HINT_HOME  "U/D move   C select"
   #define RIG_HINT_EXIT  "hold C to leave"
   #define RIG_HINT_SESSION "R: session   C hold: exit"
+  #define RIG_HINT_PICK    "C pick  L all  R GO  holdC exit"
+  #define RIG_HINT_CONFIRM "Tap CENTER to upload"
+  #define RIG_HINT_CANCEL  "Hold 2s to cancel"
 #endif
 
 namespace RigInput {
