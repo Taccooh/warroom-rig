@@ -72,6 +72,28 @@
 #define WARDRIVE_CORE_HEAP_CHECK_MS  5000
 #define WARDRIVE_CORE_SD_CHECK_MS    30000
 
+// Assignment delivery. A node heartbeats once per completed sweep, so between
+// ~400 ms (small slice) and ~2.5 s (unassigned, all 40 channels) apart. The
+// floor keeps a fast-sweeping node from pulling one 10-byte admin packet per
+// heartbeat while it is still proving the previous one.
+#define WARDRIVE_CORE_ADMIN_RESEND_MS 750
+// In-slice records needed before an assignment counts as adopted. A wrong node
+// contradicts itself within one sweep, so this only has to outlast the records
+// still in flight from before the packet landed. Only used for nodes that do
+// not send the status echo; one that does confirms in a single heartbeat.
+#define WARDRIVE_CORE_ADMIN_CONFIRM_HITS 6
+// Cadence of the admin packet sent to a node that is already confirmed. It
+// costs 14 bytes per node per interval and buys two things nothing else does:
+// the node's session state is repaired continuously instead of depending on it
+// catching one broadcast, and the node gets a regular sign of life from the
+// core, which is what lets it notice the core is gone and go back to the lobby
+// instead of scanning into dead air forever.
+#define WARDRIVE_CORE_ADMIN_KEEPALIVE_MS 15000
+// Cadence of the fleet-wide session broadcast. One packet for everybody; it
+// repairs lobby nodes (which park on channel 6) cheaply and is best-effort for
+// collecting ones, which are covered by the per-node keepalive above.
+#define WARDRIVE_CORE_SESSION_BEACON_MS 10000
+
 // Pro-Node State-Container. Adapted from Wardriver `WiFiOps.h:80-88`,
 // um `mac[6]` erweitert (Marauder nutzt volle MAC fuer Peer-Mgmt) und um
 // pro-Node-Counter fuer Stats. ~36 Byte mit Padding.
@@ -90,6 +112,33 @@ struct NodeRecord {
     int8_t   last_rssi;                 // 1 — RSSI des letzten Pakets dieser Node (Display)
     uint16_t rate_prev_lines;           // 2 — rx_text_count beim letzten Raten-Fenster
     uint8_t  rate_per_min;              // 1 — Lines/min, aus dem Fenster hochgerechnet
+
+    // --- Assignment delivery ----------------------------------------------
+    // An admin packet used to count as delivered because esp_now_send() returned
+    // OK. That return means "ESP-NOW queued it" and nothing more -- no send
+    // callback is registered anywhere in this protocol, so there is no delivery
+    // signal on the wire at all. A node that misses the packet keeps its previous
+    // (index, count) pair, or its boot default of "I am alone", which makes it a
+    // BLE host that sweeps all 40 channels. Two nodes in that state both collect
+    // BLE and the slices they believe they own stop tiling the pool. Closing that
+    // is what this state is for: the flag now clears on observed adoption, not on
+    // transmission.
+    uint8_t  admin_confirmed_version;   // 1 — version we have evidence for; 0 = none
+    uint32_t admin_last_send_ms;        // 4 — resend / keepalive rate limit
+    uint8_t  admin_resend_count;        // 1 — sends since the last confirmation
+    uint8_t  admin_ok_streak;           // 1 — in-slice records since send/contradiction
+
+    // What the last admin packet to this node actually contained. The streak
+    // above has to survive a retransmit: a resend fires on roughly every
+    // heartbeat, and the node deduplicates per BSSID, so after the first sweep
+    // of a slice there is almost nothing new left to prove itself with. Zeroing
+    // the streak on every send made the target recede faster than the node
+    // could reach it. It is reset when the CONTENT changes -- which is the only
+    // time old evidence actually stops meaning anything.
+    uint8_t  admin_sent_index;          // 1
+    uint8_t  admin_sent_count;          // 1
+    uint8_t  admin_sent_start;          // 1
+    uint8_t  admin_sent_end;            // 1
     // Padding auf naechste 4-byte-Grenze.
 };
 
@@ -170,11 +219,58 @@ private:
     void handleNodeTopologyChange();
     uint8_t getActiveNodeCount();
 
+    // ---- Assignment delivery ----
+    // Everything a node needs when it checks in: read back what it says it is
+    // running, re-arm it if that is not what we handed out, and correct its
+    // session state. Called from the heartbeat and core-request paths, which
+    // are the two moments a node is provably sitting on channel 6.
+    void serviceNodeCheckin(uint8_t slot, const uint8_t* src_mac,
+                            const enow_text_msg_t& hb);
+
+    // The node status echo out of a heartbeat payload, or nullptr when the
+    // sender is a stock node that does not send one.
+    static const enow_node_status_t* nodeStatusFromHeartbeat(const enow_text_msg_t& hb);
+
+    // Send the admin packet to a node that still owes us evidence, or that is
+    // due its keepalive, rate limited.
+    void maybeResendAdmin(uint8_t slot, const uint8_t* dest_mac);
+
+    // Unicast session command to one node. Used for a node that is registered
+    // but outside the frozen partition: it must be told to stay idle, and it
+    // must NOT be sent an admin packet, because its slice fields are still the
+    // allocation defaults.
+    bool sendSessionToNode(uint8_t slot, const uint8_t* dest_mac, uint8_t command);
+
+    // What this slot should be doing right now. A node without a slice is told
+    // to stay in the lobby even during a session -- it has nothing to sweep.
+    uint8_t desiredSessionFor(uint8_t slot) const;
+
+    // Make every node's next check-in deliver the new session state.
+    void rearmAllNodesOnSessionChange();
+
+    // Read a node's assignment back out of the data it sends. Every wardrive
+    // record carries the channel it was seen on, so a node reporting outside its
+    // slice -- or reporting BLE while not being the elected host -- is running an
+    // assignment we did not give it. Fallback for a stock node, which sends no
+    // status echo; it can only say anything while records are flowing, i.e.
+    // never in the lobby.
+    void observeAssignmentEvidence(uint8_t slot, const enow_text_msg_t& msg);
+
+    // Index of a channel number in scan_channels[], or 0xFF if it is not one.
+    static uint8_t scanIndexOfChannel(uint8_t channel);
+
+    // True when this slot should be the one collecting BLE, evaluated against the
+    // frozen partition -- the same predicate the node runs.
+    bool slotIsBleHost(uint8_t slot) const;
+
     // ---- ESP-NOW-Send ----
     bool sendCoreReply(const uint8_t* destMac);
     bool sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac);
     bool addPeerWithMode(const uint8_t* mac, bool encrypt, const uint8_t lmk16[16]);
-    bool broadcastSession(uint8_t command);   // MSG_SESSION an alle Nodes (FF:FF:...)
+    // MSG_SESSION an alle Nodes (FF:FF:...). `repeats` trades airtime for the
+    // chance of being heard: an operator-driven state change is worth five
+    // tries, the periodic beacon is not.
+    bool broadcastSession(uint8_t command, uint8_t repeats = 5);
 
     // Channel-6-fix Workaround: Promisc-on/set_channel/Promisc-off.
     // Adapted from Wardriver WiFiOps.cpp:573-593.
@@ -265,14 +361,21 @@ private:
     uint32_t last_stale_check_ms;
     uint32_t last_heap_check_ms;
     uint32_t last_sd_check_ms;
+    uint32_t last_session_beacon_ms;
 
     // Center-long-press detection. Pin C_BTN ist auf V7 GPIO 34. Wir reusen
     // den existing `c_btn`-Switches-Wrapper aus dem .ino — daher kein
     // direktes GPIO-Polling.
     uint32_t center_press_start_ms;
     bool     center_was_pressed;
+    // Edge latch for the BACK key, so a still-held ESC carried in from the menu
+    // that opened this mode cannot immediately close it again.
+    bool     back_was_pressed;
 
-    // SD-Health.
+    // SD-Health. Re-armed on every Rig Mode entry and by the periodic check --
+    // it used to be a one-way latch, so a single bad trip silenced logging for
+    // the rest of the power cycle while the screen kept counting lines in. The
+    // header bar now says so out loud.
     bool     sd_healthy;
 
     // Gesetzt, sobald das Session-Log wirklich angelegt wurde. init() legt

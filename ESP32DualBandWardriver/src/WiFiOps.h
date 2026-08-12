@@ -47,6 +47,24 @@ extern WebServer server;
 #define DEBUG_OUTPUT_DELAY 30000
 #define LOBBY_HB_INTERVAL_MS 1500   // node lobby rendezvous heartbeat cadence
 
+// Longest the node may go without checking in. The regular heartbeat rides the
+// end of a completed scan cycle, so anything that stops cycles from completing
+// also stops the node from checking in — and after NODE_TIMEOUT_MS the CORE
+// drops it. In plain mode, which is the fleet default, there is no CORE_REQUEST
+// loop to get back in, so that means gone until power cycle. This is the floor
+// under that: the node checks in on a timer as well and can never talk itself
+// out of the fleet.
+#define NODE_HB_WATCHDOG_MS 5000
+
+// How long a collecting node keeps going without a single packet from the CORE
+// before it drops back to the lobby. Only armed once the node has seen the CORE
+// check in on it repeatedly (see g_core_beacons in WiFiOps.cpp), so an older
+// CORE that never does cannot trigger it. Without this, a CORE that goes away
+// without broadcasting a STOP — Rig Mode exited, battery pulled, out of range —
+// leaves the fleet scanning into dead air, filling the dedup ring with APs that
+// are then missing from the start of the next session.
+#define NODE_CORE_LOSS_MS 90000
+
 #define NODE_FLAG_ACTIVE       0x01
 #define NODE_FLAG_ENCRYPTED    0x02
 #define NODE_FLAG_ADMIN_DIRTY  0x04
@@ -80,6 +98,61 @@ typedef struct __attribute__((packed)) {
   uint8_t type;               // MSG_SESSION
   uint8_t command;            // SESSION_CMD_STOP / SESSION_CMD_START
 } enow_session_msg_t;
+
+// ---------------------------------------------------------------------------
+// warroom-rig extensions. Mirror of WardriveCoreProtocol.h on the CORE side —
+// keep the two in step.
+//
+// Both ride inside packets the stock wardriver already accepts: the status echo
+// goes in the unused `text` payload of a heartbeat, the admin extension after
+// the 10 stock admin bytes (the MSG_ADMIN handler bounds itself with
+// `len < sizeof(enow_admin_msg_t)` and ignores anything past that, so a stock
+// node reads a 14-byte admin as the 10 bytes it knows).
+// ---------------------------------------------------------------------------
+
+#define ENOW_EXT_TAG0 'W'
+#define ENOW_EXT_TAG1 'R'
+
+#define ENOW_NODE_STATUS_VER 1
+
+#define NODE_STATUS_FLAG_COLLECTING 0x01   // node believes a session is running
+#define NODE_STATUS_FLAG_ASSIGNED   0x02   // node has adopted an admin packet
+#define NODE_STATUS_FLAG_2G4_ONLY   0x04   // radio cannot tune 5 GHz at all
+
+// Node -> Core, carried in enow_text_msg_t.text of a MSG_HEARTBEAT with `len`
+// set to sizeof(enow_node_status_t). This is what lets the CORE verify an
+// assignment landed instead of assuming a queued packet was heard, and it works
+// in the lobby, where the node sends no wardrive records to be judged by.
+typedef struct __attribute__((packed)) {
+  char    tag[2];                  // ENOW_EXT_TAG0/1
+  uint8_t struct_version;          // ENOW_NODE_STATUS_VER
+  uint8_t assignment_version;      // version the node holds; 0 = none
+  uint8_t node_index;
+  uint8_t node_count;
+  uint8_t start_channel_idx;
+  uint8_t end_channel_idx;
+  uint8_t flags;                   // NODE_STATUS_FLAG_*
+} enow_node_status_t;
+
+#define ENOW_ADMIN_EXT_VER 1
+
+// Core -> Node, MSG_ADMIN with a tail carrying the session command. A node that
+// rebooted, or that was out of range when a START/STOP was broadcast, is put
+// right by the next admin packet rather than having to wait for a Re-Sync.
+typedef struct __attribute__((packed)) {
+  enow_admin_msg_t base;           // the 10 stock bytes, unchanged
+  char    tag[2];                  // ENOW_EXT_TAG0/1
+  uint8_t struct_version;          // ENOW_ADMIN_EXT_VER
+  uint8_t session;                 // SESSION_CMD_STOP / SESSION_CMD_START
+} enow_admin_ext_msg_t;
+
+// Wire compatibility is byte-for-byte or it is nothing — the CORE has the same
+// assertions against the same numbers.
+static_assert(sizeof(enow_admin_msg_t)     == 10, "enow_admin_msg_t must stay 10 bytes");
+static_assert(sizeof(enow_session_msg_t)   == 6,  "enow_session_msg_t must stay 6 bytes");
+static_assert(sizeof(enow_admin_ext_msg_t) == 14, "enow_admin_ext_msg_t must be 10 stock bytes + 4");
+static_assert(sizeof(enow_node_status_t)   <= ENOW_TEXT_MAX,
+              "enow_node_status_t must fit in the heartbeat text payload");
 
 struct WardriveRecord {
   String bssid;
@@ -138,7 +211,7 @@ class WiFiOps
     uint32_t total_net_count = 0;
     uint32_t total_ble_count = 0;
 
-    void startNextNodeAssignedScan();
+    bool startNextNodeAssignedScan();
     void runAdminWindowAfterScanCycle();
     void debugPrintNodeTable();
     void handleNodeTopologyChange();

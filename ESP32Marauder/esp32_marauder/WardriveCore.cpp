@@ -18,6 +18,7 @@
 #include <WiFi.h>
 #include "esp_wifi.h"
 #include "esp_wifi_types.h"
+#include "esp_random.h"
 #include "mbedtls/sha256.h"
 
 #include "WiFiScan.h"
@@ -73,6 +74,17 @@ static const uint8_t BROADCAST_MAC_CORE[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 // Callback nur dann etwas tut wenn init() lief und deinit() noch nicht.
 static WardriveCore* g_active_core = nullptr;
 
+// Callbacks currently inside onDataRecv_static(). Clearing g_active_core does
+// NOT stop a callback that has already passed the null check and is midway
+// through touching the instance and its queue -- and ESP-NOW gives no promise
+// that esp_now_unregister_recv_cb() waits for one either. deinit() spins on
+// this before it frees anything the callback can still reach.
+//
+// Single writer: ESP-NOW dispatches receive callbacks from one task, so the
+// increment/decrement pair is never interleaved with itself. deinit() only
+// reads it.
+static volatile uint32_t g_rx_cb_depth = 0;
+
 // ============================================================
 // Konstruktor
 // ============================================================
@@ -107,8 +119,10 @@ WardriveCore::WardriveCore() {
     last_stale_check_ms = 0;
     last_heap_check_ms = 0;
     last_sd_check_ms = 0;
+    last_session_beacon_ms = 0;
     center_press_start_ms = 0;
     center_was_pressed = false;
+    back_was_pressed = false;
     sd_healthy = true;
     memset(node_table, 0, sizeof(node_table));
 }
@@ -176,9 +190,12 @@ int WardriveCore::findNodeByMacSuffix(uint16_t suffix) {
 // can legitimately share the last two MAC bytes — observed on TJ's test
 // rig 2026-05-15, only one of two nodes ever showed up in the slot table
 // when both were powered together.
+//
+// Reserved slots match too: a node that went quiet during a session keeps its
+// place in the frozen partition, and this is what hands it back.
 int WardriveCore::findNodeByMac(const uint8_t* mac) {
     for (int i = 0; i < WARDRIVE_CORE_MAX_NODES; i++) {
-        if ((node_table[i].flags & NODE_FLAG_ACTIVE) &&
+        if ((node_table[i].flags & (NODE_FLAG_ACTIVE | NODE_FLAG_RESERVED)) &&
             memcmp(node_table[i].mac, mac, 6) == 0) {
             return i;
         }
@@ -188,20 +205,45 @@ int WardriveCore::findNodeByMac(const uint8_t* mac) {
 
 int WardriveCore::allocateNodeSlot(const uint8_t* mac) {
     uint16_t suffix = macToSuffix(mac);
+    int reclaim = -1;
+    uint32_t reclaim_age = 0;
+
     for (int i = 0; i < WARDRIVE_CORE_MAX_NODES; i++) {
-        if (!(node_table[i].flags & NODE_FLAG_ACTIVE)) {
-            memset(&node_table[i], 0, sizeof(NodeRecord));
-            memcpy(node_table[i].mac, mac, 6);
-            node_table[i].mac_suffix = suffix;
-            node_table[i].last_seen_ms = millis();
-            node_table[i].assigned_index = 0;
-            node_table[i].start_channel_idx = 0;
-            node_table[i].end_channel_idx = NUM_SCAN_CHANNELS - 1;
-            node_table[i].last_admin_version_sent = 0;
-            node_table[i].flags = NODE_FLAG_ACTIVE | NODE_FLAG_ADMIN_DIRTY;
-            return i;
+        if (node_table[i].flags & (NODE_FLAG_ACTIVE | NODE_FLAG_RESERVED)) {
+            // A reserved slot is held for a node that may still come back, but
+            // an unknown node in front of us is here NOW. If nothing is free,
+            // the one that has been away longest gives up its place.
+            if (!(node_table[i].flags & NODE_FLAG_ACTIVE)) {
+                uint32_t age = millis() - node_table[i].last_seen_ms;
+                if (reclaim < 0 || age > reclaim_age) { reclaim = i; reclaim_age = age; }
+            }
+            continue;
         }
+        memset(&node_table[i], 0, sizeof(NodeRecord));
+        memcpy(node_table[i].mac, mac, 6);
+        node_table[i].mac_suffix = suffix;
+        node_table[i].last_seen_ms = millis();
+        node_table[i].assigned_index = 0;
+        node_table[i].start_channel_idx = 0;
+        node_table[i].end_channel_idx = NUM_SCAN_CHANNELS - 1;
+        node_table[i].last_admin_version_sent = 0;
+        node_table[i].flags = NODE_FLAG_ACTIVE | NODE_FLAG_ADMIN_DIRTY;
+        return i;
     }
+
+    if (reclaim >= 0) {
+        Serial.printf("CORE: reclaiming reserved slot %d (suffix %04X, away %lus)\n",
+                      reclaim, node_table[reclaim].mac_suffix,
+                      (unsigned long)(reclaim_age / 1000));
+        memset(&node_table[reclaim], 0, sizeof(NodeRecord));
+        memcpy(node_table[reclaim].mac, mac, 6);
+        node_table[reclaim].mac_suffix = suffix;
+        node_table[reclaim].last_seen_ms = millis();
+        node_table[reclaim].end_channel_idx = NUM_SCAN_CHANNELS - 1;
+        node_table[reclaim].flags = NODE_FLAG_ACTIVE | NODE_FLAG_ADMIN_DIRTY;
+        return reclaim;
+    }
+
     // Hard-Reject: alle MAX_NODES Slots belegt. Caller wertet -1 als
     // "ignore packet, do not send reply" — siehe integration_design.md 2.4.
     return -1;
@@ -215,6 +257,20 @@ int WardriveCore::touchNode(const uint8_t* mac, bool& isNewNode) {
     int slot = findNodeByMac(mac);
     if (slot >= 0) {
         node_table[slot].last_seen_ms = millis();
+        if (!(node_table[slot].flags & NODE_FLAG_ACTIVE)) {
+            // Back from a dropout, into the slice it already had. It is not a
+            // new node -- the partition never lost it -- but everything we knew
+            // about its state is stale: it may have rebooted, and it certainly
+            // missed whatever we broadcast while it was away.
+            node_table[slot].flags &= ~(NODE_FLAG_RESERVED | NODE_FLAG_ENCRYPTED |
+                                        NODE_FLAG_REPORTS_STATUS);
+            node_table[slot].flags |= NODE_FLAG_ACTIVE | NODE_FLAG_ADMIN_DIRTY;
+            node_table[slot].admin_confirmed_version = 0;
+            node_table[slot].admin_ok_streak = 0;
+            node_table[slot].admin_last_send_ms = 0;   // re-arm immediately
+            Serial.printf("CORE: Slot %d back (suffix %04X), re-arming\n",
+                          slot, node_table[slot].mac_suffix);
+        }
         return slot;
     }
 
@@ -245,10 +301,24 @@ bool WardriveCore::removeStaleNodes() {
                 if (esp_now_is_peer_exist(node_table[i].mac)) {
                     esp_now_del_peer(node_table[i].mac);
                 }
-                Serial.printf("CORE: Slot %d stale, dropping (suffix %04X)\n",
-                              i, node_table[i].mac_suffix);
-                memset(&node_table[i], 0, sizeof(NodeRecord));
-                changed = true;
+                if (collecting && (node_table[i].flags & NODE_FLAG_PARTITIONED)) {
+                    // Hold the place instead of freeing it. The partition is
+                    // frozen during a session, so a node whose slot is wiped
+                    // comes back as a late joiner with no slice at all and
+                    // contributes nothing for the rest of the drive -- for a
+                    // reboot or a minute in a radio shadow. Reserved keeps the
+                    // MAC and the slice; touchNode() hands both straight back.
+                    node_table[i].flags &= ~(NODE_FLAG_ACTIVE | NODE_FLAG_ENCRYPTED |
+                                             NODE_FLAG_REPORTS_STATUS);
+                    node_table[i].flags |= NODE_FLAG_RESERVED;
+                    Serial.printf("CORE: Slot %d quiet, holding its slice (suffix %04X)\n",
+                                  i, node_table[i].mac_suffix);
+                } else {
+                    Serial.printf("CORE: Slot %d stale, dropping (suffix %04X)\n",
+                                  i, node_table[i].mac_suffix);
+                    memset(&node_table[i], 0, sizeof(NodeRecord));
+                    changed = true;
+                }
             }
         }
     }
@@ -259,9 +329,22 @@ bool WardriveCore::removeStaleNodes() {
 void WardriveCore::recalculateChannelAssignments() {
     uint8_t active_slots[WARDRIVE_CORE_MAX_NODES];
     uint8_t active_count = 0;
+    uint8_t narrow_count = 0;   // nodes whose radio cannot tune 5 GHz
 
+    // 2.4-GHz-only nodes come first, so their slices land at the bottom of
+    // scan_channels[] where the channels they can actually reach live. This
+    // also keeps the BLE host (highest index) on a dual-band node, which is
+    // where it belongs -- see the BLE comment in the node's scan loop.
     for (uint8_t i = 0; i < WARDRIVE_CORE_MAX_NODES; i++) {
-        if (node_table[i].flags & NODE_FLAG_ACTIVE) {
+        if ((node_table[i].flags & NODE_FLAG_ACTIVE) &&
+            (node_table[i].flags & NODE_FLAG_2G4_ONLY)) {
+            active_slots[active_count++] = i;
+            narrow_count++;
+        }
+    }
+    for (uint8_t i = 0; i < WARDRIVE_CORE_MAX_NODES; i++) {
+        if ((node_table[i].flags & NODE_FLAG_ACTIVE) &&
+            !(node_table[i].flags & NODE_FLAG_2G4_ONLY)) {
             active_slots[active_count++] = i;
         }
     }
@@ -277,21 +360,52 @@ void WardriveCore::recalculateChannelAssignments() {
     // Sanity: die ersten 14 Eintraege in scan_channels[] sind die 2.4-GHz-Channels.
     static_assert(WARDRIVE_2_4_CHANNEL_COUNT <= NUM_SCAN_CHANNELS,
                   "WARDRIVE_2_4_CHANNEL_COUNT exceeds scan_channels[] length");
-    const uint8_t pool_size = WARDRIVE_2_4_CHANNEL_COUNT;
+    const uint8_t homogeneous_pool = WARDRIVE_2_4_CHANNEL_COUNT;
+    const bool    mixed_fleet = false;
 #else
-    const uint8_t pool_size = NUM_SCAN_CHANNELS;
+    // A slice was an even cut of 0..39 with no idea what the receiving radio
+    // can do. Hand an all-5-GHz cut to a classic ESP32 and it scans nothing,
+    // completes no cycle and -- because the heartbeat used to ride the end of a
+    // cycle -- checks in never again. Splitting per band means every node gets
+    // channels it can tune, and the split is still a contiguous range, which is
+    // all the wire format can express.
+    const bool    mixed_fleet = (narrow_count > 0) && (narrow_count < active_count);
+    const uint8_t homogeneous_pool = (narrow_count == 0) ? NUM_SCAN_CHANNELS
+                                                         : (WARDRIVE_CORE_2G4_END_IDX + 1);
 #endif
 
     for (uint8_t node_num = 0; node_num < active_count; node_num++) {
         uint8_t slot = active_slots[node_num];
-        // Even split des Pools auf alle aktiven Nodes.
-        uint8_t start_idx = (node_num * pool_size) / active_count;
-        uint8_t end_idx   = (((node_num + 1) * pool_size) / active_count) - 1;
+
+        int pool_first, pool_len, k, k_count;
+        if (mixed_fleet && node_num < narrow_count) {
+            pool_first = 0;
+            pool_len   = WARDRIVE_CORE_2G4_END_IDX + 1;
+            k          = node_num;
+            k_count    = narrow_count;
+        } else if (mixed_fleet) {
+            pool_first = WARDRIVE_CORE_2G4_END_IDX + 1;
+            pool_len   = NUM_SCAN_CHANNELS - (WARDRIVE_CORE_2G4_END_IDX + 1);
+            k          = node_num - narrow_count;
+            k_count    = active_count - narrow_count;
+        } else {
+            pool_first = 0;
+            pool_len   = homogeneous_pool;
+            k          = node_num;
+            k_count    = active_count;
+        }
+
+        int start_idx = pool_first + (k * pool_len) / k_count;
+        int end_idx   = pool_first + ((k + 1) * pool_len) / k_count - 1;
+        // More nodes in a group than channels in its band: overlap rather than
+        // hand out an empty range, which the node would read as start > end and
+        // fall back to scanning everything.
+        if (end_idx < start_idx) end_idx = start_idx;
 
         node_table[slot].assigned_index = node_num;
-        node_table[slot].start_channel_idx = start_idx;
-        node_table[slot].end_channel_idx = end_idx;
-        node_table[slot].flags |= NODE_FLAG_ADMIN_DIRTY;
+        node_table[slot].start_channel_idx = (uint8_t)start_idx;
+        node_table[slot].end_channel_idx = (uint8_t)end_idx;
+        node_table[slot].flags |= NODE_FLAG_ADMIN_DIRTY | NODE_FLAG_PARTITIONED;
     }
 }
 
@@ -308,6 +422,15 @@ void WardriveCore::markAllActiveNodesAdminDirty() {
 void WardriveCore::handleNodeTopologyChange() {
     assignment_version++;
     if (assignment_version == 0) assignment_version = 1; // skip 0
+    // Reserved slots belong to the partition that is about to be replaced.
+    // Holding them past that point would keep a dead node's index alive in a
+    // fleet it is no longer counted in.
+    for (uint8_t i = 0; i < WARDRIVE_CORE_MAX_NODES; i++) {
+        if (!(node_table[i].flags & NODE_FLAG_ACTIVE) &&
+            (node_table[i].flags & NODE_FLAG_RESERVED)) {
+            memset(&node_table[i], 0, sizeof(NodeRecord));
+        }
+    }
     recalculateChannelAssignments();
     markAllActiveNodesAdminDirty();
 }
@@ -331,7 +454,7 @@ uint8_t WardriveCore::getNodeCount() {
 // MSG_SESSION an alle Nodes broadcasten (FF:FF:...). ESP-NOW-Broadcast ist
 // unbestaetigt, daher senden wir das Kommando mehrfach. Eine Node, die es
 // trotzdem verpasst, bleibt idle bis zum naechsten resyncSession().
-bool WardriveCore::broadcastSession(uint8_t command) {
+bool WardriveCore::broadcastSession(uint8_t command, uint8_t repeats) {
     static const uint8_t bcast[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     if (!bcast_peer_ready) {
         if (!esp_now_is_peer_exist(bcast)) {
@@ -353,9 +476,9 @@ bool WardriveCore::broadcastSession(uint8_t command) {
     msg.command = command;
 
     bool ok = false;
-    for (int i = 0; i < 5; i++) {                 // 5x fuer Broadcast-Reliability
+    for (uint8_t i = 0; i < repeats; i++) {       // Nx fuer Broadcast-Reliability
         if (esp_now_send(bcast, (uint8_t*)&msg, sizeof(msg)) == ESP_OK) ok = true;
-        delay(15);
+        if (i + 1 < repeats) delay(15);
     }
     return ok;
 }
@@ -377,12 +500,33 @@ void WardriveCore::ensureLogOpen() {
     #endif
 }
 
+// After a session edge every node's known state is a guess again: the broadcast
+// is unacknowledged, and a node hopping channels is unlikely to be listening
+// when it goes out. Clearing the send timestamps means the very next check-in
+// from each node carries the new session command in its admin packet, instead
+// of waiting out the keepalive interval.
+void WardriveCore::rearmAllNodesOnSessionChange() {
+    for (uint8_t i = 0; i < WARDRIVE_CORE_MAX_NODES; i++) {
+        if (node_table[i].flags & NODE_FLAG_ACTIVE)
+            node_table[i].admin_last_send_ms = 0;
+    }
+}
+
 void WardriveCore::startSession() {
     if (!is_running) return;
     ensureLogOpen();
     collecting = true;
     Serial.printf("CORE: SESSION START (%u nodes)\n", getActiveNodeCount());
-    broadcastSession(SESSION_CMD_START);
+    // No broadcast START, deliberately. A broadcast says "collect" to every node
+    // in earshot, including one still holding a stale assignment from an earlier
+    // partition: it sweeps the wrong slice, and if its old index happened to be
+    // the last one it runs BLE as a second host. STOP is safe to shout at
+    // everyone, START never is -- it only means anything next to the slice it
+    // applies to, so it travels in the unicast admin packet instead. The rearm
+    // below puts that on the wire at the node's next check-in, which is at most
+    // LOBBY_HB_INTERVAL_MS (1.5 s) away.
+    rearmAllNodesOnSessionChange();
+    last_session_beacon_ms = millis();
 }
 
 void WardriveCore::stopSession() {
@@ -390,6 +534,8 @@ void WardriveCore::stopSession() {
     collecting = false;
     Serial.println("CORE: SESSION STOP -> lobby");
     broadcastSession(SESSION_CMD_STOP);
+    rearmAllNodesOnSessionChange();
+    last_session_beacon_ms = millis();
 }
 
 void WardriveCore::resyncSession() {
@@ -400,7 +546,11 @@ void WardriveCore::resyncSession() {
     ensureLogOpen();   // resync can be the first thing that starts collecting
     collecting = true;
     Serial.printf("CORE: SESSION RESYNC + START (%u nodes)\n", getActiveNodeCount());
-    broadcastSession(SESSION_CMD_START);
+    // Per-node only -- see startSession() for why START is never broadcast.
+    // Doubly true here: a re-sync exists precisely because the partition just
+    // changed, so every node's held assignment is suspect until it checks in.
+    rearmAllNodesOnSessionChange();
+    last_session_beacon_ms = millis();
 }
 
 // ============================================================
@@ -445,6 +595,17 @@ bool WardriveCore::sendCoreReply(const uint8_t* destMac) {
     return true;
 }
 
+// What a node should be doing, given the partition as it stands. A node that
+// is registered but has no slice is told to stay in the lobby even in the
+// middle of a session: there is nothing for it to sweep, and letting it run on
+// its allocation defaults means it sweeps everyone else's channels.
+uint8_t WardriveCore::desiredSessionFor(uint8_t slot) const {
+    if (slot >= WARDRIVE_CORE_MAX_NODES) return SESSION_CMD_STOP;
+    if (!collecting) return SESSION_CMD_STOP;
+    if (!(node_table[slot].flags & NODE_FLAG_PARTITIONED)) return SESSION_CMD_STOP;
+    return SESSION_CMD_START;
+}
+
 // Adapted from JCMK ESP32DualBandWardriver (WiFiOps.cpp:614-654), MIT License.
 // Admin-Pakete werden IMMER plaintext gesendet — auch wenn der Peer regulaer
 // encrypted ist. Wardriver-Konvention. Begruendung: bei Topologie-Wechsel
@@ -454,7 +615,13 @@ bool WardriveCore::sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac) {
     if (slot >= WARDRIVE_CORE_MAX_NODES) return false;
     if (!(node_table[slot].flags & NODE_FLAG_ACTIVE)) return false;
 
-    enow_admin_msg_t msg = {};
+    // The stock 10 bytes plus our 4-byte tail. A stock node bounds its MSG_ADMIN
+    // handler with `len < sizeof(enow_admin_msg_t)` and then casts, so a longer
+    // frame is read as the 10 bytes it knows and the tail is ignored. Ours reads
+    // the tail and learns the session state at the same time, which is what
+    // re-arms a node that rebooted or missed a broadcast.
+    enow_admin_ext_msg_t ext = {};
+    enow_admin_msg_t& msg = ext.base;
     memcpy(msg.magic, ENOW_MAGIC, 4);
     msg.type = MSG_ADMIN;
     msg.assignment_version = assignment_version;
@@ -464,6 +631,10 @@ bool WardriveCore::sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac) {
     msg.node_count = partition_node_count;
     msg.start_channel_idx = node_table[slot].start_channel_idx;
     msg.end_channel_idx = node_table[slot].end_channel_idx;
+    ext.tag[0] = ENOW_EXT_TAG0;
+    ext.tag[1] = ENOW_EXT_TAG1;
+    ext.struct_version = ENOW_ADMIN_EXT_VER;
+    ext.session = desiredSessionFor(slot);
 
     // Temporary plaintext peer. Wir loeschen ihn sofort danach, damit der
     // regulaere encrypted Peer (falls vorhanden) wieder aktiv ist.
@@ -480,7 +651,7 @@ bool WardriveCore::sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac) {
         return false;
     }
 
-    esp_err_t res = esp_now_send(dest_mac, (uint8_t*)&msg, sizeof(msg));
+    esp_err_t res = esp_now_send(dest_mac, (uint8_t*)&ext, sizeof(ext));
     esp_now_del_peer(dest_mac);
 
     if (res != ESP_OK) {
@@ -495,9 +666,264 @@ bool WardriveCore::sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac) {
         addPeerWithMode(dest_mac, true, lmk);
     }
 
+    // Evidence gathered under a DIFFERENT assignment says nothing about this
+    // one -- but a retransmit of the same assignment does not invalidate
+    // anything, and clearing the streak on every send made confirmation
+    // unreachable: a resend fires on roughly every heartbeat, while the node
+    // deduplicates per BSSID and therefore has almost no fresh in-slice records
+    // left to offer after the first sweep. Compare what we just sent with what
+    // we sent last time and only start over when it actually changed.
+    const bool content_changed =
+        node_table[slot].admin_sent_index != msg.node_index ||
+        node_table[slot].admin_sent_count != msg.node_count ||
+        node_table[slot].admin_sent_start != msg.start_channel_idx ||
+        node_table[slot].admin_sent_end   != msg.end_channel_idx;
+    if (content_changed) {
+        node_table[slot].admin_ok_streak = 0;
+        node_table[slot].admin_confirmed_version = 0;
+        node_table[slot].admin_sent_index = msg.node_index;
+        node_table[slot].admin_sent_count = msg.node_count;
+        node_table[slot].admin_sent_start = msg.start_channel_idx;
+        node_table[slot].admin_sent_end   = msg.end_channel_idx;
+    }
+
     node_table[slot].last_admin_version_sent = assignment_version;
-    node_table[slot].flags &= ~NODE_FLAG_ADMIN_DIRTY;
+    node_table[slot].admin_last_send_ms = millis();
+    if (node_table[slot].admin_resend_count < 255) node_table[slot].admin_resend_count++;
+    // ADMIN_DIRTY deliberately stays set. esp_now_send() returning OK means the
+    // packet was queued, not that it was heard -- see the NodeRecord comment. It
+    // clears when the node itself shows the assignment: in its heartbeat status
+    // echo, or (for a stock node, which sends none) in observeAssignmentEvidence.
     return true;
+}
+
+// Unicast session command. Only for a node we must NOT send an admin packet to
+// -- one that is registered but outside the frozen partition, whose slice
+// fields are still the allocation defaults of index 0 and the whole pool.
+bool WardriveCore::sendSessionToNode(uint8_t slot, const uint8_t* dest_mac,
+                                     uint8_t command) {
+    if (slot >= WARDRIVE_CORE_MAX_NODES) return false;
+
+    enow_session_msg_t msg = {};
+    memcpy(msg.magic, ENOW_MAGIC, 4);
+    msg.type = MSG_SESSION;
+    msg.command = command;
+
+    bool had_peer_before = esp_now_is_peer_exist(dest_mac);
+    if (had_peer_before) esp_now_del_peer(dest_mac);
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, dest_mac, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) return false;
+
+    esp_err_t res = esp_now_send(dest_mac, (uint8_t*)&msg, sizeof(msg));
+    esp_now_del_peer(dest_mac);
+
+    if (use_encryption && (node_table[slot].flags & NODE_FLAG_ENCRYPTED)) {
+        addPeerWithMode(dest_mac, true, lmk);
+    }
+    node_table[slot].admin_last_send_ms = millis();
+    return (res == ESP_OK);
+}
+
+// Send the admin packet at a node check-in. Called from the heartbeat and
+// core-request paths: the node transmits from channel 6 and the core answers
+// straight away, which is the only window in the cycle where it is reliably
+// listening on the right channel.
+//
+// Two reasons to send. The obvious one is that the node still owes us evidence
+// it adopted the assignment. The other is the keepalive: even a confirmed node
+// gets one every WARDRIVE_CORE_ADMIN_KEEPALIVE_MS, because the packet also
+// carries the session command, and a node that missed a START or STOP broadcast
+// has no other way to find out. It doubles as the core's sign of life, which is
+// what lets a node notice the core is gone instead of scanning into dead air.
+void WardriveCore::maybeResendAdmin(uint8_t slot, const uint8_t* dest_mac) {
+    if (slot >= WARDRIVE_CORE_MAX_NODES) return;
+
+    const uint32_t now = millis();
+    const bool partitioned = (node_table[slot].flags & NODE_FLAG_PARTITIONED) != 0;
+    const bool dirty       = (node_table[slot].flags & NODE_FLAG_ADMIN_DIRTY) != 0;
+    // Only a node that owes us evidence for a slice it actually has gets the
+    // fast cadence. There is nothing to hurry for the others.
+    const uint32_t min_gap = (dirty && partitioned) ? WARDRIVE_CORE_ADMIN_RESEND_MS
+                                                    : WARDRIVE_CORE_ADMIN_KEEPALIVE_MS;
+
+    // A fresh slot has admin_last_send_ms == 0 and goes out immediately.
+    if (node_table[slot].admin_last_send_ms != 0 &&
+        (now - node_table[slot].admin_last_send_ms) < min_gap)
+        return;
+
+    // Never hand out the allocation defaults. A slot that is not in the current
+    // partition still carries index 0 / channels 0..39, and a node that adopts
+    // that sweeps the whole pool across everyone else's slices. It still needs
+    // telling to stay idle, though -- it may have been collecting for a
+    // different core, or for this one before it dropped out.
+    if (!partitioned) {
+        sendSessionToNode(slot, dest_mac, SESSION_CMD_STOP);
+        return;
+    }
+
+    sendAdminToNodeSlot(slot, dest_mac);
+}
+
+uint8_t WardriveCore::scanIndexOfChannel(uint8_t channel) {
+    for (uint8_t i = 0; i < NUM_SCAN_CHANNELS; i++) {
+        if (scan_channels[i] == channel) return i;
+    }
+    return 0xFF;
+}
+
+bool WardriveCore::slotIsBleHost(uint8_t slot) const {
+    if (partition_node_count == 0) return false;
+    if (partition_node_count <= 1) return true;
+    return node_table[slot].assigned_index == partition_node_count - 1;
+}
+
+// Read a node's live assignment back out of the records it sends.
+//
+// The wardrive line is the 6-field CSV `BSSID,ESSID,SEC,CHANNEL,RSSI,TYPE`. Two
+// of those fields say what the node believes it was told: the channel it just
+// swept, and whether it is doing BLE. Both are on the wire for every record
+// already, so this costs no traffic and needs no protocol change.
+//
+// Contradiction is decisive, agreement is not. A stale node sweeping the whole
+// pool also produces in-slice records -- it just produces out-of-slice ones too,
+// within one sweep. So one contradiction resets, and adoption needs a clean run.
+//
+// This is the fallback for a node that does not send the heartbeat status echo,
+// i.e. a stock wardriver. It can only work while records are flowing, which is
+// never the case in the lobby -- a node that reports its own state confirms in
+// one heartbeat instead, and does it before the session starts.
+void WardriveCore::observeAssignmentEvidence(uint8_t slot, const enow_text_msg_t& msg) {
+    if (slot >= WARDRIVE_CORE_MAX_NODES) return;
+    if (partition_node_count == 0) return;
+    if (msg.len == 0 || msg.len > ENOW_TEXT_MAX) return;
+
+    // Walk to fields 4 (channel) and 6 (type) without copying the line. Every
+    // bound below is msg.len, never a NUL: the payload is attacker-controlled
+    // in plaintext mode and nothing on the wire makes it terminated.
+    const char* field[6] = {0};
+    uint8_t nf = 0;
+    field[nf++] = msg.text;
+    for (uint16_t i = 0; i < msg.len && nf < 6; i++) {
+        if (msg.text[i] == ',') field[nf++] = &msg.text[i + 1];
+    }
+    if (nf < 6) return;   // malformed; the compose path already counts it as bad
+    if (field[5] >= msg.text + msg.len) return;   // trailing comma, no type field
+
+    const bool is_ble = (field[5][0] == 'B');
+    bool contradicts = false;
+
+    if (is_ble) {
+        // A node collecting BLE while it is not the elected host is running an
+        // (index, count) pair we never gave it. This is the exact shape of the
+        // field failure: several nodes on BLE, channels underneath uncovered.
+        if (!slotIsBleHost(slot)) contradicts = true;
+    } else {
+        // Digits read by hand rather than with atoi(), which would run off the
+        // end of an unterminated payload.
+        uint16_t p = (uint16_t)(field[3] - msg.text);
+        uint16_t ch = 0;
+        while (p < msg.len && msg.text[p] >= '0' && msg.text[p] <= '9' && ch < 1000) {
+            ch = (uint16_t)(ch * 10 + (msg.text[p] - '0'));
+            p++;
+        }
+        const uint8_t idx = (ch <= 255) ? scanIndexOfChannel((uint8_t)ch) : 0xFF;
+        if (idx != 0xFF) {
+            if (idx < node_table[slot].start_channel_idx ||
+                idx > node_table[slot].end_channel_idx)
+                contradicts = true;
+        }
+        // A channel number that is not in the table proves nothing either way.
+    }
+
+    if (contradicts) {
+        node_table[slot].admin_ok_streak = 0;
+        node_table[slot].admin_confirmed_version = 0;
+        node_table[slot].flags |= NODE_FLAG_ADMIN_DIRTY;
+        return;
+    }
+
+    if (node_table[slot].flags & NODE_FLAG_ADMIN_DIRTY) {
+        if (node_table[slot].admin_ok_streak < 255) node_table[slot].admin_ok_streak++;
+        if (node_table[slot].admin_ok_streak >= WARDRIVE_CORE_ADMIN_CONFIRM_HITS) {
+            node_table[slot].flags &= ~NODE_FLAG_ADMIN_DIRTY;
+            node_table[slot].admin_confirmed_version = assignment_version;
+            node_table[slot].admin_resend_count = 0;
+        }
+    }
+}
+
+// The status echo a warroom-rig node writes into the otherwise unused text
+// payload of its heartbeat. A stock node sends that payload zeroed with len 0,
+// so both the length and the tag have to match before a single byte is trusted.
+const enow_node_status_t* WardriveCore::nodeStatusFromHeartbeat(const enow_text_msg_t& hb) {
+    if (hb.len != sizeof(enow_node_status_t)) return nullptr;
+    const enow_node_status_t* st = (const enow_node_status_t*)hb.text;
+    if (st->tag[0] != ENOW_EXT_TAG0 || st->tag[1] != ENOW_EXT_TAG1) return nullptr;
+    if (st->struct_version != ENOW_NODE_STATUS_VER) return nullptr;
+    return st;
+}
+
+// Everything that happens when a node checks in. This is the one moment the
+// node is provably awake on channel 6, so it is where the core finds out what
+// the node is actually running and puts it right -- rather than assuming the
+// last packet it queued was heard.
+void WardriveCore::serviceNodeCheckin(uint8_t slot, const uint8_t* src_mac,
+                                      const enow_text_msg_t& hb) {
+    if (slot >= WARDRIVE_CORE_MAX_NODES) return;
+
+    const enow_node_status_t* st = nodeStatusFromHeartbeat(hb);
+    if (st) {
+        node_table[slot].flags |= NODE_FLAG_REPORTS_STATUS;
+
+        // Band capability. A classic ESP32 cannot tune 5 GHz at all, and a
+        // slice made entirely of 5-GHz indices leaves it with nothing to scan.
+        // Learning this from the node is the only way the core can know --
+        // there is no other field on the wire that says what a radio can do.
+        const bool only24 = (st->flags & NODE_STATUS_FLAG_2G4_ONLY) != 0;
+        const bool knew24 = (node_table[slot].flags & NODE_FLAG_2G4_ONLY) != 0;
+        if (only24 != knew24) {
+            if (only24) node_table[slot].flags |= NODE_FLAG_2G4_ONLY;
+            else        node_table[slot].flags &= ~NODE_FLAG_2G4_ONLY;
+            // Re-cut the pool now that we know which bands it has to respect.
+            // Only in the lobby: during a session the partition is frozen, and
+            // the node's own scan loop skips what it cannot tune until the
+            // operator re-syncs.
+            if (!collecting) handleNodeTopologyChange();
+        }
+
+        // Does the node's own account of its assignment match what we handed
+        // out? This is the confirmation the record-sniffing fallback cannot
+        // give in the lobby, which is exactly when the operator is looking at
+        // the fleet and deciding whether to start.
+        const bool matches =
+            (st->flags & NODE_STATUS_FLAG_ASSIGNED) &&
+            (node_table[slot].flags & NODE_FLAG_PARTITIONED) &&
+            st->node_index        == node_table[slot].assigned_index &&
+            st->node_count        == partition_node_count &&
+            st->start_channel_idx == node_table[slot].start_channel_idx &&
+            st->end_channel_idx   == node_table[slot].end_channel_idx;
+        if (matches) {
+            node_table[slot].flags &= ~NODE_FLAG_ADMIN_DIRTY;
+            node_table[slot].admin_confirmed_version = st->assignment_version;
+            node_table[slot].admin_resend_count = 0;
+        } else {
+            node_table[slot].flags |= NODE_FLAG_ADMIN_DIRTY;
+            node_table[slot].admin_confirmed_version = 0;
+        }
+
+        // Session state. A node that rebooted comes back saying it is idle
+        // while the drive is running; one that missed a STOP says the opposite.
+        // Either way it needs correcting now, not at the next Re-Sync.
+        const bool node_collecting = (st->flags & NODE_STATUS_FLAG_COLLECTING) != 0;
+        if (node_collecting != (desiredSessionFor(slot) == SESSION_CMD_START)) {
+            node_table[slot].admin_last_send_ms = 0;   // bypass the keepalive gap
+        }
+    }
+
+    maybeResendAdmin(slot, src_mac);
 }
 
 // ============================================================
@@ -509,7 +935,19 @@ bool WardriveCore::sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac) {
 // Marauder-Wigle-Output: "BSSID,SSID,SECURITY,DATETIME,CHANNEL,RSSI,LAT,LON,ALT,ACC,WIFI|BLE".
 // Wir ergaenzen DATETIME (zwischen SECURITY und CHANNEL) und LAT/LON/ALT/ACC/Type.
 String WardriveCore::composeWigleLineFromNodeText(const enow_text_msg_t& msg) {
-    const char* line = msg.text;
+    // The sender is supposed to NUL-terminate `text`, and nothing on the wire
+    // makes it. The plaintext path has no authentication whatsoever -- any
+    // ESP32 in range on channel 6 can send 212 bytes of commas with no
+    // terminator -- and the strchr/String parse below would then walk straight
+    // off the end of the queue message. Take exactly the declared length and
+    // terminate it here, so the parser cannot read past the payload no matter
+    // what arrived.
+    if (msg.len == 0 || msg.len > ENOW_TEXT_MAX) return String();
+    char line_buf[ENOW_TEXT_MAX + 1];
+    memcpy(line_buf, msg.text, msg.len);
+    line_buf[msg.len] = '\0';
+
+    const char* line = line_buf;
     int start = 0;
     int fieldIndex = 0;
     String fields[6];
@@ -589,58 +1027,63 @@ String WardriveCore::composeWigleLineFromNodeText(const enow_text_msg_t& msg) {
 // Mutex-contention.
 void WardriveCore::onDataRecv_static(const esp_now_recv_info_t* info,
                                      const uint8_t* data, int len) {
-    if (!g_active_core) return;
-    if (!info || !data) return;
+    // Announce that a callback is inside the instance BEFORE reading the
+    // pointer, and snapshot the pointer once. Re-reading g_active_core on every
+    // use, which is what this did, meant deinit() could null it between two
+    // dereferences and free the queue under a callback that had already passed
+    // the check. The depth counter is what deinit() waits on; without it there
+    // is no ordering between the two tasks at all.
+    g_rx_cb_depth++;
+    WardriveCore* core = g_active_core;
+    if (!core || !info || !data) {
+        g_rx_cb_depth--;
+        return;
+    }
+
     // Min-Length: Magic[4] + Type[1] = 5 Bytes.
-    if (len < 5) {
-        g_active_core->total_rx_bad++;
-        return;
-    }
-    if (memcmp(data, ENOW_MAGIC, 4) != 0) {
-        // Kein Marauder-CORE-Paket. Im normalen Marauder-Stack hat ESP-NOW
-        // nichts zu suchen, daher als bad-packet zaehlen.
-        g_active_core->total_rx_bad++;
-        return;
-    }
-    const uint8_t msgType = data[4];
+    bool bad = false;
+    do {
+        if (len < 5) { bad = true; break; }
+        if (memcmp(data, ENOW_MAGIC, 4) != 0) {
+            // Kein Marauder-CORE-Paket. Im normalen Marauder-Stack hat ESP-NOW
+            // nichts zu suchen, daher als bad-packet zaehlen.
+            bad = true; break;
+        }
+        const uint8_t msgType = data[4];
 
-    // ADMIN ist Core->Node only. Wenn wir ADMIN empfangen, ist das ein
-    // anderer Core in Reichweite — ignorieren statt enqueuen.
-    if (msgType == MSG_ADMIN) {
-        g_active_core->total_rx_bad++;
-        return;
-    }
+        // ADMIN ist Core->Node only. Wenn wir ADMIN empfangen, ist das ein
+        // anderer Core in Reichweite — ignorieren statt enqueuen.
+        if (msgType == MSG_ADMIN) { bad = true; break; }
 
-    // Nur TEXT/HEARTBEAT/CORE_REQUEST gehen in die Queue.
-    if (msgType != MSG_TEXT && msgType != MSG_HEARTBEAT && msgType != MSG_CORE_REQUEST) {
-        g_active_core->total_rx_bad++;
-        return;
-    }
+        // Nur TEXT/HEARTBEAT/CORE_REQUEST gehen in die Queue.
+        if (msgType != MSG_TEXT && msgType != MSG_HEARTBEAT && msgType != MSG_CORE_REQUEST) {
+            bad = true; break;
+        }
 
-    // Volle Struct-Groesse muss vorhanden sein (Wardriver-Konvention:
-    // immer sizeof(enow_text_msg_t) gesendet).
-    if (len < (int)sizeof(enow_text_msg_t)) {
-        g_active_core->total_rx_bad++;
-        return;
-    }
+        // Volle Struct-Groesse muss vorhanden sein (Wardriver-Konvention:
+        // immer sizeof(enow_text_msg_t) gesendet).
+        if (len < (int)sizeof(enow_text_msg_t)) { bad = true; break; }
 
-    WardriveCoreQueueMsg qmsg;
-    memcpy(qmsg.src_mac, info->src_addr, 6);
-    qmsg.rssi = (info->rx_ctrl) ? info->rx_ctrl->rssi : 0;
-    qmsg.msg_type = msgType;
-    memcpy(&qmsg.payload, data, sizeof(enow_text_msg_t));
+        WardriveCoreQueueMsg qmsg;
+        memcpy(qmsg.src_mac, info->src_addr, 6);
+        qmsg.rssi = (info->rx_ctrl) ? info->rx_ctrl->rssi : 0;
+        qmsg.msg_type = msgType;
+        memcpy(&qmsg.payload, data, sizeof(enow_text_msg_t));
 
-    // Snapshot the queue handle once: deinit() may null rx_queue concurrently
-    // from another task. Guard against a torn-down (or not-yet-created) queue so
-    // we never call xQueueSend on an invalid handle.
-    QueueHandle_t q = g_active_core->rx_queue;
-    if (!q) return;
-    // RX-Callback laeuft im WiFi-Task — wir nutzen FromISR-API NICHT direkt
-    // (kein ISR), aber `xQueueSend` ist threadsafe und nicht-blocking mit
-    // ticks_to_wait=0. Bei voll: drop. Counter wird erhoeht.
-    if (xQueueSend(q, &qmsg, 0) != pdTRUE) {
-        g_active_core->total_rx_drops++;
-    }
+        // Snapshot the queue handle once, for the same reason as the instance
+        // pointer above.
+        QueueHandle_t q = core->rx_queue;
+        if (!q) break;
+        // RX-Callback laeuft im WiFi-Task — wir nutzen FromISR-API NICHT direkt
+        // (kein ISR), aber `xQueueSend` ist threadsafe und nicht-blocking mit
+        // ticks_to_wait=0. Bei voll: drop. Counter wird erhoeht.
+        if (xQueueSend(q, &qmsg, 0) != pdTRUE) {
+            core->total_rx_drops++;
+        }
+    } while (false);
+
+    if (bad) core->total_rx_bad++;
+    g_rx_cb_depth--;
 }
 
 void WardriveCore::updateLastRx(int slot, int8_t rssi) {
@@ -749,10 +1192,24 @@ void WardriveCore::init() {
     // sind — eine wardrive_core_N.log mit genau einer Zeile. Die SD lief davon
     // voll, und die Upload-Auswahl war voll leerer Dateien, zwischen denen die
     // echten Fahrten nicht mehr zu finden waren.
+    //
+    // sd_healthy is re-armed here, not merely cleared. It used to be set true
+    // once in the constructor and false on the first bad trip, and nothing ever
+    // set it back: one full card or one visit without a card silenced logging
+    // for the whole power cycle, while the console happily went on registering
+    // nodes and counting received lines. Entering Rig Mode is the natural place
+    // to look at the card again.
     #ifdef HAS_SD
-        if (!sd_obj.supported) {
+        sd_healthy = sd_obj.supported;
+        if (!sd_healthy) {
             Serial.println("CORE: WARN — SD not supported, logging disabled");
-            sd_healthy = false;
+        } else {
+            uint64_t total = SD.totalBytes();
+            uint64_t used  = SD.usedBytes();
+            if (total > 0 && (total - used) < (1ULL * 1024 * 1024)) {
+                sd_healthy = false;
+                Serial.println("CORE: WARN — SD < 1MB free, logging disabled");
+            }
         }
     #endif
     log_open = false;
@@ -790,15 +1247,39 @@ void WardriveCore::init() {
     drawn_row_count = 0xFF;   // forces a full node-table repaint
     drawn_pitch = 0;
     memset(drawn_sig, 0xFF, sizeof(drawn_sig));
-    assignment_version = 1;
+    // Seed the assignment version from the hardware RNG instead of restarting
+    // at 1 on every Core Mode entry.
+    //
+    // The node holds its copy in RAM for as long as it is powered, and it used
+    // to adopt an admin packet only when the version differed. A core that
+    // restarts and counts 1,2,3... again therefore hands out numbers a node may
+    // already be holding -- with a completely different slice underneath. The
+    // node discards the packet as "nothing new" and keeps sweeping the previous
+    // session's band: one band unswept, another swept twice, and two nodes both
+    // passing the BLE-host test. Our nodes now compare the payload, which fixes
+    // it outright; a random start makes the collision unlikely for stock ones
+    // too, which is the best a one-byte counter allows.
+    assignment_version = (uint8_t)(esp_random() % 255) + 1;   // 1..255, never 0
     partition_node_count = 0;   // no partition until nodes register
     session_start_ms = millis();
     last_display_refresh_ms = 0;
     last_stale_check_ms = 0;
     last_heap_check_ms = 0;
     last_sd_check_ms = 0;
+    last_session_beacon_ms = 0;
     center_press_start_ms = 0;
     center_was_pressed = false;
+    // Adopt a BACK key that is already down as "already seen". This runs a
+    // moment after the menu entry that opened Rig Mode, and ESC is exactly what
+    // someone may still be holding from backing around the tool tree. Seeding it
+    // false makes the very first poll read that held key as a rising edge, and
+    // the mode closes on the frame it opened -- the comment at the detector says
+    // edge-triggering prevents that, and on its own it does not.
+    #if defined(RIG_HAS_NAV) && defined(RIG_HAS_BACK)
+      back_was_pressed = RigInput::down(RigInput::BACK);
+    #else
+      back_was_pressed = false;
+    #endif
 
     // Step 9: Display init.
     drawCoreModeFrame();
@@ -832,18 +1313,47 @@ void WardriveCore::deinit() {
     if (!is_running) return;
     Serial.println("CORE: deinit() begin");
 
-    // Disarm the receive path FIRST — stop new callbacks and make the instance
-    // unreachable BEFORE tearing down the queue the callback writes into. Mirror
-    // of init()'s "arm last": otherwise a node still transmitting during shutdown
-    // could fire the callback into a freed queue.
+    // Tell the fleet the drive is over BEFORE the radio goes away. Leaving Rig
+    // Mode used to broadcast nothing at all -- broadcastSession() was only ever
+    // called by the operator's Start/Stop/Re-Sync -- so every node kept
+    // collecting into a core that no longer existed. Everything it saw in that
+    // window went into its 200-entry dedup ring, and those APs were then missing
+    // from the START of the next session, which is the one part of a drive an
+    // operator cannot repeat.
+    const bool was_collecting = collecting;
+    if (was_collecting) {
+        broadcastSession(SESSION_CMD_STOP);
+        collecting = false;
+    }
+
+    // Disarm the receive path — stop new callbacks and make the instance
+    // unreachable — and then WAIT for any callback that is already inside it.
+    // Neither unregistering nor nulling the pointer ejects a callback that has
+    // already passed the null check and is on its way to rx_queue; ESP-NOW makes
+    // no promise about in-flight dispatches either. Without this wait the
+    // vQueueDelete below can free the queue under it.
     esp_now_unregister_recv_cb();
     g_active_core = nullptr;
+    for (uint32_t spin = 0; g_rx_cb_depth != 0 && spin < 200; spin++) delay(1);
+    if (g_rx_cb_depth != 0) {
+        // 200 ms is far longer than the callback's own work (a memcmp and a
+        // queue push). If it has not left by now something else is wrong, and
+        // leaking one queue is a great deal better than freeing it underneath.
+        Serial.println("CORE: RX callback still active at teardown, leaking rx_queue");
+        rx_queue = nullptr;
+    }
 
     // Drain remaining Queue + flush.
     if (rx_queue) {
         WardriveCoreQueueMsg qmsg;
         while (xQueueReceive(rx_queue, &qmsg, 0) == pdTRUE) {
-            if (qmsg.msg_type == MSG_TEXT) {
+            // Same guards runTick applies. Without them, leaving Rig Mode after
+            // only looking at the lobby appended Wigle rows to whatever file the
+            // PREVIOUS mode had left open in Buffer -- a .pcap, or an already
+            // uploaded log that got recreated without its header. `log_open`
+            // is the one that says the target file is ours.
+            if (qmsg.msg_type == MSG_TEXT && was_collecting && log_open &&
+                qmsg.payload.len <= ENOW_TEXT_MAX) {
                 String line = composeWigleLineFromNodeText(qmsg.payload);
                 if (line.length() > 0) {
                     #ifdef HAS_SD
@@ -860,8 +1370,8 @@ void WardriveCore::deinit() {
     // alle Daten dranhaengen, daher hier nochmal explizit.
     buffer_obj.save();
 
-    // ESP-NOW deinit. Recv callback was already unregistered and g_active_core
-    // cleared at the top of deinit(), before the queue was freed.
+    // ESP-NOW deinit. The recv callback was unregistered, g_active_core cleared
+    // and any in-flight callback waited out above, before the queue was freed.
     if (esp_now_is_peer_exist(BROADCAST_MAC_CORE)) {
         esp_now_del_peer(BROADCAST_MAC_CORE);
     }
@@ -936,17 +1446,13 @@ void WardriveCore::runTick(uint32_t currentTime) {
                             node_table[slot].flags |= NODE_FLAG_ENCRYPTED;
                         }
                     }
-                    if (node_table[slot].flags & NODE_FLAG_ADMIN_DIRTY) {
-                        sendAdminToNodeSlot(slot, qmsg.src_mac);
-                    }
+                    serviceNodeCheckin(slot, qmsg.src_mac, qmsg.payload);
                     break;
                 }
                 case MSG_HEARTBEAT: {
                     // Adapted from W:WiFiOps.cpp:913-936.
                     node_table[slot].hb_counter = qmsg.payload.counter;
-                    if (node_table[slot].flags & NODE_FLAG_ADMIN_DIRTY) {
-                        sendAdminToNodeSlot(slot, qmsg.src_mac);
-                    }
+                    serviceNodeCheckin(slot, qmsg.src_mac, qmsg.payload);
                     break;
                 }
                 case MSG_TEXT: {
@@ -966,10 +1472,22 @@ void WardriveCore::runTick(uint32_t currentTime) {
                         break;
                     }
                     #ifdef HAS_SD
-                        if (sd_healthy) {
+                        // log_open says the file Buffer is pointing at is the
+                        // one this session created. Without it a failed
+                        // startLog would send Wigle rows into whatever another
+                        // mode had open.
+                        if (sd_healthy && log_open) {
                             buffer_obj.append(wigle);
                         }
                     #endif
+                    // Before the counters: what this record says about whether the
+                    // node is running the assignment we last sent it. Only worth
+                    // anything for a node that sends no status echo -- one that
+                    // does has already told us, in its heartbeat, and told us in
+                    // the lobby where no records exist to judge by.
+                    if (!(node_table[slot].flags & NODE_FLAG_REPORTS_STATUS))
+                        observeAssignmentEvidence(slot, qmsg.payload);
+
                     total_rx_lines++;
                     node_table[slot].rx_text_count++;
                     // Type-Counter: parse-out aus Payload (letztes Feld nach ',').
@@ -1009,23 +1527,46 @@ void WardriveCore::runTick(uint32_t currentTime) {
         }
     }
 
-    // 4) Periodischer SD-Check (Failure-Modes 6.3 + 6.4).
+    // 4) Periodischer SD-Check (Failure-Modes 6.3 + 6.4). Symmetrisch: der
+    //    Check darf sd_healthy auch wieder SETZEN. Als Einbahn-Latch blieb das
+    //    Logging nach einem einzigen vollen Moment fuer den Rest des
+    //    Power-Cycles aus, ohne dass irgendetwas auf dem Schirm es sagte.
     #ifdef HAS_SD
         if (currentTime - last_sd_check_ms > WARDRIVE_CORE_SD_CHECK_MS) {
             last_sd_check_ms = currentTime;
-            if (sd_obj.supported) {
+            bool healthy_now = sd_obj.supported;
+            if (healthy_now) {
                 // Frei-Space-Check. Default-Marauder-API exposed kein
                 // direktes "totalBytes/usedBytes"-Wrapper — fall-back via
                 // SD-Lib direkt.
                 uint64_t total = SD.totalBytes();
                 uint64_t used  = SD.usedBytes();
                 if (total > 0 && (total - used) < (1ULL * 1024 * 1024)) {
-                    sd_healthy = false;
-                    Serial.println("CORE: SD < 1MB free, stop logging");
+                    healthy_now = false;
                 }
             }
+            if (healthy_now != sd_healthy) {
+                sd_healthy = healthy_now;
+                Serial.println(healthy_now ? "CORE: SD usable again, logging resumed"
+                                           : "CORE: SD unusable (<1MB free), stop logging");
+            }
+            // A session that started while the card was unusable never opened a
+            // log; do it now that it is writable again rather than dropping the
+            // rest of the drive.
+            if (sd_healthy && collecting) ensureLogOpen();
         }
     #endif
+
+    // 4b) Fleet-wide idle beacon -- STOP only, and only while we are idle.
+    //     It parks a node that missed a STOP edge or is still following a core
+    //     that went away, and it cannot mislead anyone: "stay idle" is true for
+    //     every listener whenever no session is running here. The START
+    //     direction is per-node by construction; see startSession().
+    if (!collecting &&
+        currentTime - last_session_beacon_ms > WARDRIVE_CORE_SESSION_BEACON_MS) {
+        last_session_beacon_ms = currentTime;
+        broadcastSession(SESSION_CMD_STOP, 1);
+    }
 
     // 5) Periodischer Display-Refresh (Raten vorher rollen, damit die Anzeige
     //    frische lines/min sieht).
@@ -1060,6 +1601,22 @@ void WardriveCore::runTick(uint32_t currentTime) {
             center_was_pressed = false;
             center_press_start_ms = 0;
         }
+
+        #ifdef RIG_HAS_BACK
+          // The key hint at the bottom of this screen says "ESC: exit", and on
+          // the ADV it did nothing -- the held-SELECT gesture above was the only
+          // way out. A board with a dedicated back key should not have to learn
+          // a hold. Edge-triggered on purpose: the same still-held ESC that left
+          // a menu must not immediately tear down the mode it just opened.
+          const bool back_now = RigInput::down(RigInput::BACK);
+          if (back_now && !back_was_pressed) {
+              back_was_pressed = true;
+              Serial.println("CORE: BACK -> exit");
+              deinit();
+              return;
+          }
+          if (!back_now) back_was_pressed = false;
+        #endif
       #endif
     #endif
 
@@ -1163,6 +1720,17 @@ void WardriveCore::drawRigBar() {
         tft.setTextColor(scol, STATUSBAR_COLOR);
         tft.setCursor(132, 7);
         tft.print(sb);
+
+        // SD health, in the one place that is on screen the whole time. A card
+        // that is missing or full stops every line from being written while the
+        // node table and the hero counters carry on as if the drive were being
+        // recorded -- which is the worst way to find out, hours later, at the
+        // upload. Blank when all is well; the field is padded so it clears.
+        #ifdef HAS_SD
+            tft.setTextColor(sd_healthy ? STATUSBAR_COLOR : TFT_RED, STATUSBAR_COLOR);
+            tft.setCursor(84, 7);
+            tft.print(sd_healthy ? "     " : "NO SD");
+        #endif
 
         uint8_t bl = battery_obj.battery_level;
         uint16_t bcol = (bl >= 40) ? WC_GREEN : ((bl >= 20) ? WC_AMBER : TFT_RED);
@@ -1339,14 +1907,35 @@ void WardriveCore::refreshCoreDisplay() {
                                    (nr.assigned_index == partition_node_count - 1));
             tft.setTextColor(WC_GOLD, rowbg);
             tft.setCursor(WC_X_SLICE, ty);
-            if (nr.start_channel_idx < NUM_SCAN_CHANNELS &&
+            // A leading marker means the slice shown is what we asked for, not
+            // what we have seen being swept. It sits in front because the column
+            // truncates at 10 and a trailing marker would be the first thing
+            // lost. This is the state that used to be invisible: a node that
+            // never heard its admin packet looked identical to one that had.
+            //
+            //   '?' the node can tell us and has not agreed yet
+            //   '~' we cannot tell yet -- a stock node that sends no status
+            //       echo, in the lobby, where it sends no records either
+            //
+            // The distinction matters because '?' used to be shown for both, so
+            // every node in the lobby wore one, which is exactly where the
+            // operator looks before pressing Start.
+            const bool observable = (nr.flags & NODE_FLAG_REPORTS_STATUS) || collecting;
+            const char* unconf = (nr.flags & NODE_FLAG_ADMIN_DIRTY)
+                                     ? (observable ? "?" : "~") : "";
+            if (!(nr.flags & NODE_FLAG_PARTITIONED))
+                // Registered but outside the frozen partition -- a late joiner.
+                // Its slice fields are allocation defaults, so printing them
+                // would claim a range this node was never given.
+                snprintf(buf, sizeof(buf), "wait");
+            else if (nr.start_channel_idx < NUM_SCAN_CHANNELS &&
                 nr.end_channel_idx   < NUM_SCAN_CHANNELS)
-                snprintf(buf, sizeof(buf), "%u-%u%s",
+                snprintf(buf, sizeof(buf), "%s%u-%u%s", unconf,
                          (unsigned)scan_channels[nr.start_channel_idx],
                          (unsigned)scan_channels[nr.end_channel_idx],
                          ble_host ? " BLE" : "");
             else
-                snprintf(buf, sizeof(buf), "%s", ble_host ? "BLE" : "-");
+                snprintf(buf, sizeof(buf), "%s%s", unconf, ble_host ? "BLE" : "-");
             // Pad to the column width so a shorter value overwrites the old tail.
             for (size_t p = strlen(buf); p < 10 && p < sizeof(buf) - 1; p++) buf[p] = ' ';
             buf[10] = '\0';

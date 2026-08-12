@@ -228,6 +228,9 @@ typedef struct __attribute__((packed)) {
 ```
 
 - Total: 4 + 1 + 5 = **10 bytes**.
+- **warroom-rig deviates here** — our core sends 14 bytes, the stock 10 plus a
+  tagged tail carrying the session command. Stock nodes ignore it. See
+  section 8.
 - `start_channel_idx` and `end_channel_idx` are **indices** into `scan_channels[]` (`WiFiOps.cpp:44-53`), NOT channel numbers directly. `scan_channels[0]=1, scan_channels[13]=14, scan_channels[14]=36, ...`. The array has **NUM_SCAN_CHANNELS = 40** entries (14 × 2.4 GHz + 26 × 5 GHz). The core must have the identical channel table, otherwise indices do not match.
 
 **Byte-exact array** (from `WiFiOps.cpp:44-53`):
@@ -326,6 +329,8 @@ Completely plain. There is **no** simple auth mechanism, no MAC filter, no share
 - Trigger: `runAdminWindowAfterScanCycle()` (`WiFiOps.cpp:691-701`), called by the node after every complete scan cycle through all assigned channels (`WiFiOps.cpp:1251-1252`).
 - A node sends a heartbeat **not on a fixed time interval**, but depending on the scan cycle. With `CHANNEL_TIMER=80`ms (`configs.h:140`) per channel and e.g. 5 assigned channels: ~400ms between heartbeats. With 32 channels (no admin received): ~2.5s.
 - Heartbeat contains monotonic `g_hb_counter`, plain in encrypted mode to `g_core_mac`, otherwise broadcast.
+- **warroom-rig deviates here** — our nodes fill the otherwise unused `text`
+  payload with a status echo. Stock nodes leave it zeroed. See section 8.
 
 ### Stale detection
 
@@ -438,3 +443,95 @@ Hypotheses, NOT directly confirmed:
 - The assumption that Marauder currently does not use ESP-NOW itself — **must be verified in 1.5**.
 - The assumption that classic ESP32 can understand the meaning of the 5GHz indices without having to scan itself — I consider trivial because the CORE in the wardriver scans nothing anyway.
 - "Encrypted peer limit 6 is tweakable via build flag" — comes from IDF docs, no tweak made in the wardriver code whatsoever.
+
+
+---
+
+## 8. warroom-rig extensions
+
+Everything above documents Koko's protocol as of v2.2.0 and still describes what a
+stock node speaks. This section is what *our* fork adds. Both extensions ride
+inside packets the stock firmware already accepts, so a mixed fleet keeps working:
+a stock node ignores what it does not understand, and our core falls back to
+inferring the same information from the node's wardrive records.
+
+### Why these exist
+
+The stock protocol has no way for a node to say what it currently believes it was
+told. The core sends an assignment and finds out whether it arrived only by
+watching which channels the node reports on afterwards — which means it learns
+nothing at all in the lobby, before collecting starts, which is exactly when the
+operator is looking at the fleet and deciding whether to start. And a lost admin
+packet is never retried, because `esp_now_send()` returning OK means "queued",
+not "heard": no send callback is registered anywhere in this protocol.
+
+The consequence was observed in the field: more than one node collecting BLE,
+with channels underneath nobody swept. A node derives its BLE role from
+`(node_count <= 1) || (node_index == node_count - 1)`, so a node running a stale
+or default assignment elects itself alongside the real host.
+
+### 8.1 Node status echo (node → core)
+
+Carried in `enow_text_msg_t.text` of a `MSG_HEARTBEAT`, with `len` set to
+`sizeof(enow_node_status_t)`. The packet size is unchanged (still 212 bytes) —
+the stock firmware already sends this field, zeroed, and reads nothing but the
+counter.
+
+```c
+typedef struct __attribute__((packed)) {
+    char    tag[2];               // 'W','R' — see below
+    uint8_t struct_version;       // ENOW_NODE_STATUS_VER
+    uint8_t assignment_version;   // what the node currently holds
+    uint8_t node_index;
+    uint8_t node_count;
+    uint8_t start_channel_idx;
+    uint8_t end_channel_idx;
+    uint8_t flags;                // COLLECTING | ASSIGNED | 2G4_ONLY
+} enow_node_status_t;   // 9 bytes
+```
+
+The two-byte tag is not decoration: all-zeroes is exactly what a stock node puts
+in that payload, and reading that as a status report would have the core believe
+every stock node is unassigned and idle. The core checks both `len` and the tag
+before trusting a single byte.
+
+`NODE_STATUS_FLAG_2G4_ONLY` reports a radio that cannot tune 5 GHz at all. The
+core needs it because the even 0..39 split it used to do hands such a node a
+slice it cannot scan — and a node that never completes a scan cycle never sends a
+heartbeat either, so it drops out of the table and, in plain mode, never returns.
+
+### 8.2 Admin extension (core → node)
+
+Appended after the 10 stock bytes of `MSG_ADMIN`:
+
+```c
+typedef struct __attribute__((packed)) {
+    enow_admin_msg_t base;        // the 10 stock bytes, unchanged
+    char    tag[2];
+    uint8_t struct_version;       // ENOW_ADMIN_EXT_VER
+    uint8_t session;              // SESSION_CMD_STOP / SESSION_CMD_START
+} enow_admin_ext_msg_t;   // 14 bytes
+```
+
+Backward compatible because the stock node bounds its handler with
+`if (len < (int)sizeof(enow_admin_msg_t)) return;` and then casts — a longer
+frame is read as the 10 bytes it knows and the tail is ignored. Verified in
+`ESP32DualBandWardriver/src/WiFiOps.cpp`, `MSG_ADMIN` branch.
+
+The session command travels with the assignment because those are the two things
+a node that just rebooted, or that missed a broadcast, needs before it is useful
+again — and the admin packet is already sent unicast at a moment the node is
+demonstrably listening. `MSG_SESSION` broadcasts still exist; they are now the
+fast path rather than the only path.
+
+### 8.3 Adoption is no longer edge-triggered on the version
+
+Stock nodes adopt an admin packet only when `assignment_version` differs from the
+one they hold. That is an upstream log-spam optimisation, and it is unsound as a
+correctness mechanism: the core's counter restarts on every Core Mode entry while
+the node's copy is RAM-lifetime, so the two collide across a core restart and the
+node silently discards an assignment that differs in every other field.
+
+Our nodes adopt when any field differs. Our core additionally seeds
+`assignment_version` randomly at init instead of starting at 1, which narrows the
+collision window for stock nodes we cannot reflash.

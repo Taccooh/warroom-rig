@@ -16,10 +16,56 @@ static bool g_secure_ready = false;
 static uint32_t g_hb_counter = 0;
 static unsigned long g_last_hb_ms = 0;
 
+// True once an MSG_ADMIN has actually been adopted. `assignment_version` cannot
+// answer that on its own: the CORE seeds it randomly now, so 0 is a legal value
+// on the wire, and the node boots holding 0 as "none". A separate flag keeps
+// "have I been told anything" and "what was I told" from being the same byte.
+static bool g_have_assignment = false;
+
+// Core liveness, as seen from the node. `g_last_core_pkt_ms` is any packet from
+// a CORE; `g_core_beacons` counts how many arrived at least 5 s apart, i.e. how
+// much evidence there is that this CORE checks in on us on a schedule rather
+// than only when something changes. The core-loss timeout arms only after two
+// of those, so an older CORE — which goes silent once a node has adopted its
+// assignment — can never make a node drop out of a perfectly good session.
+static unsigned long g_last_core_pkt_ms = 0;
+static uint8_t g_core_beacons = 0;
+
+// Set when a session starts, acted on in the scan loop. The dedup ring must be
+// emptied at the start of a session: it is never otherwise cleared, so every AP
+// the node saw while scanning into dead air — after a CORE vanished without a
+// STOP, say — would be suppressed at the beginning of the next drive, which is
+// the one stretch an operator cannot simply drive again. Doing it here rather
+// than in the receive callback keeps the 1.2 kB memset out of the WiFi task.
+static volatile bool g_dedup_reset_pending = false;
+
 // Retry state
 static unsigned long g_last_req_ms = 0;
 static unsigned long g_last_debug_print = 0;
 static uint32_t g_req_interval_ms = REQ_INITIAL_MS;
+
+// Note that a CORE just spoke to us, and how regularly it does so.
+static void noteCoreContact() {
+  unsigned long now = millis();
+  if (g_last_core_pkt_ms != 0 && (now - g_last_core_pkt_ms) >= 5000 &&
+      g_core_beacons < 4)
+    g_core_beacons++;
+  g_last_core_pkt_ms = now;
+}
+
+// Apply a session command from either the MSG_SESSION broadcast or the tail of
+// an admin packet. Both are the CORE saying the same thing; the admin path
+// exists because a broadcast is unacknowledged and the node is off channel 6
+// for most of a sweep, so relying on catching one is relying on luck.
+static void applySessionCommand(uint8_t command) {
+  extern WiFiOps wifi_ops;
+  bool want = (command == SESSION_CMD_START);
+  if (want == wifi_ops.session_active) return;
+  wifi_ops.session_active = want;
+  if (want) g_dedup_reset_pending = true;
+  Serial.printf("NODE: SESSION %s\n",
+                want ? "START -> collecting" : "STOP -> lobby");
+}
 
 static inline uint16_t rd_le16(const uint8_t *p) {
   return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
@@ -714,12 +760,15 @@ void WiFiOps::runAdminWindowAfterScanCycle() {
   }
 }
 
-void WiFiOps::startNextNodeAssignedScan() {
+// Returns true when a scan was actually started. False means the assigned slice
+// holds nothing this radio can tune, which is a state the caller must not
+// mistake for a scan that failed.
+bool WiFiOps::startNextNodeAssignedScan() {
   if (assigned_start_idx >= NUM_SCAN_CHANNELS ||
       assigned_end_idx >= NUM_SCAN_CHANNELS ||
       assigned_start_idx > assigned_end_idx) {
     WiFi.scanNetworks(true, true, false, 80);
-    return;
+    return true;
   }
 
   if (current_assigned_scan_idx < assigned_start_idx ||
@@ -727,24 +776,40 @@ void WiFiOps::startNextNodeAssignedScan() {
     current_assigned_scan_idx = assigned_start_idx;
   }
 
-  uint8_t channel = scan_channels[current_assigned_scan_idx];
 #ifdef WARDRIVE_2_4_ONLY
   // Safety net: if the CORE ever assigns a 5-GHz index to a 2.4-only node
   // (mixed-fleet, stale admin packet, etc.) silently skip rather than
   // spamming `WiFi scan failed to start!` once per cycle.
-  if (channel > 14) {
-    current_assigned_scan_idx++;
-    if (current_assigned_scan_idx > assigned_end_idx)
-      current_assigned_scan_idx = assigned_start_idx;
-    return;
+  //
+  // Skipping used to `return` here, having started no scan at all. With a slice
+  // that holds no 2.4-GHz index — which an even 0..39 split hands out to every
+  // 2.4-only node that is not the lowest-indexed one in the fleet — that was
+  // permanent: no scan, so no completed cycle, so no heartbeat, so the CORE
+  // timed the node out after 60 s and in plain mode it never came back. Walk
+  // the slice for something tunable instead, and if there is genuinely nothing,
+  // fall through without a scan and let the watchdog in runWardrive() keep the
+  // node checked in until the CORE hands out a slice it can sweep.
+  {
+    const uint8_t span = (uint8_t)(assigned_end_idx - assigned_start_idx + 1);
+    uint8_t tried = 0;
+    while (scan_channels[current_assigned_scan_idx] > 14 && tried < span) {
+      current_assigned_scan_idx++;
+      if (current_assigned_scan_idx > assigned_end_idx)
+        current_assigned_scan_idx = assigned_start_idx;
+      tried++;
+    }
+    if (scan_channels[current_assigned_scan_idx] > 14)
+      return false;
   }
 #endif
+  uint8_t channel = scan_channels[current_assigned_scan_idx];
   WiFi.scanNetworks(true, true, false, 80, channel);
 
   current_assigned_scan_idx++;
   if (current_assigned_scan_idx > assigned_end_idx) {
     current_assigned_scan_idx = assigned_start_idx;
   }
+  return true;
 }
 
 void WiFiOps::sendHeartbeat() {
@@ -758,6 +823,35 @@ void WiFiOps::sendHeartbeat() {
   memcpy(msg.magic, MAGIC, 4);
   msg.type = MSG_HEARTBEAT;
   msg.counter = g_hb_counter++;
+
+  // Say what we are actually doing, in the payload the stock heartbeat leaves
+  // empty. Without this the CORE can only guess whether an admin packet landed
+  // — esp_now_send() returning OK means "queued", nothing more — and it can
+  // only guess from wardrive records, which do not exist in the lobby, which is
+  // exactly where the operator is deciding whether the fleet is ready. It also
+  // tells the CORE this radio cannot tune 5 GHz, so it stops handing us slices
+  // we cannot sweep.
+  enow_node_status_t st = {};
+  st.tag[0] = ENOW_EXT_TAG0;
+  st.tag[1] = ENOW_EXT_TAG1;
+  st.struct_version = ENOW_NODE_STATUS_VER;
+  st.assignment_version = assignment_version;
+  st.node_index = assigned_node_index;
+  st.node_count = assigned_node_count;
+  st.start_channel_idx = assigned_start_idx;
+  st.end_channel_idx = assigned_end_idx;
+  if (wifi_ops.session_active) st.flags |= NODE_STATUS_FLAG_COLLECTING;
+  if (g_have_assignment)       st.flags |= NODE_STATUS_FLAG_ASSIGNED;
+#ifdef WARDRIVE_2_4_ONLY
+  st.flags |= NODE_STATUS_FLAG_2G4_ONLY;
+#endif
+  memcpy(msg.text, &st, sizeof(st));
+  msg.len = (uint16_t)sizeof(st);
+
+  // Before the send, not after: the watchdog's job is to bound how long we go
+  // without ATTEMPTING a check-in. A send that fails must not make it fire on
+  // every single tick.
+  g_last_hb_ms = millis();
 
   esp_err_t res;
   if (wifi_ops.use_encryption) {
@@ -1048,6 +1142,8 @@ void WiFiOps::OnDataRecv(const esp_now_recv_info_t* info, const uint8_t* data, i
     if (msgType == MSG_CORE_REPLY) {
       if (len < (int)sizeof(enow_text_msg_t)) return;
 
+      noteCoreContact();
+
       memcpy(g_core_mac, info->src_addr, 6);
       g_have_core = true;
 
@@ -1073,14 +1169,40 @@ void WiFiOps::OnDataRecv(const esp_now_recv_info_t* info, const uint8_t* data, i
     if (msgType == MSG_ADMIN) {
       if (len < (int)sizeof(enow_admin_msg_t)) return;
 
+      noteCoreContact();
+
       const enow_admin_msg_t* admin = (const enow_admin_msg_t*)data;
 
-      if (admin->assignment_version != assignment_version) {
+      // Adopt when the CONTENT differs, not only when the version byte does.
+      //
+      // assignment_version is a one-byte counter that lives and dies with the
+      // CORE's process. A CORE that restarts hands out small numbers again, in
+      // registration order — the same numbers a node that stayed powered is
+      // still holding, with an entirely different slice underneath them. Version
+      // -only comparison then discards a perfectly valid packet as "nothing new"
+      // and the node keeps sweeping the previous session's band: one band that
+      // nobody covers, another covered twice, and two nodes both passing the
+      // BLE-host test. Comparing the version is an upstream optimisation against
+      // log spam. The payload is the thing that actually matters.
+      const bool differs =
+          !g_have_assignment ||
+          admin->assignment_version != assignment_version ||
+          admin->node_index         != assigned_node_index ||
+          admin->node_count         != assigned_node_count ||
+          admin->start_channel_idx  != assigned_start_idx ||
+          admin->end_channel_idx    != assigned_end_idx;
+
+      if (differs) {
         assignment_version = admin->assignment_version;
         assigned_node_index = admin->node_index;
         assigned_node_count = admin->node_count;
         assigned_start_idx = admin->start_channel_idx;
         assigned_end_idx = admin->end_channel_idx;
+        g_have_assignment = true;
+
+        // Start the new slice from its beginning rather than wherever the old
+        // cursor happened to sit, so the next completed cycle is a whole one.
+        wifi_ops.current_assigned_scan_idx = assigned_start_idx;
 
         Serial.printf("NODE: New admin assignment v%u | node %u/%u | idx %u-%u\n",
                       assignment_version,
@@ -1090,19 +1212,44 @@ void WiFiOps::OnDataRecv(const esp_now_recv_info_t* info, const uint8_t* data, i
                       assigned_end_idx);
       }
 
+      // Trailing warroom-rig fields, if this CORE sends them. The session
+      // command travels with the assignment because those are the two things a
+      // node that rebooted mid-drive is missing, and this packet is unicast at
+      // a moment we are known to be listening — unlike the broadcast.
+      if (len >= (int)sizeof(enow_admin_ext_msg_t)) {
+        const enow_admin_ext_msg_t* ext = (const enow_admin_ext_msg_t*)data;
+        if (ext->tag[0] == ENOW_EXT_TAG0 && ext->tag[1] == ENOW_EXT_TAG1 &&
+            ext->struct_version == ENOW_ADMIN_EXT_VER) {
+          applySessionCommand(ext->session);
+        }
+      }
+
       return;
     }
 
     if (msgType == MSG_SESSION) {
       if (len < (int)sizeof(enow_session_msg_t)) return;
 
+      noteCoreContact();
+
       const enow_session_msg_t* s = (const enow_session_msg_t*)data;
-      bool want = (s->command == SESSION_CMD_START);
-      if (want != wifi_ops.session_active) {
-        wifi_ops.session_active = want;
-        Serial.printf("NODE: SESSION %s\n",
-                      want ? "START -> collecting" : "STOP -> lobby");
+      // A broadcast STOP is always safe to obey -- "stand down" needs no
+      // context. A broadcast START never is: it says "collect" without saying
+      // on what, so a node holding a slice from an earlier partition would
+      // sweep someone else's channels, and if its old index happened to be the
+      // last one it would run BLE as a second host. START only means anything
+      // next to the assignment it belongs with, which is why the CORE now sends
+      // it only in the unicast admin packet.
+      //
+      // This is the receiving half of that rule and costs one comparison. It is
+      // deliberately the weaker half: g_have_assignment stays true once set, so
+      // this catches a node that was never assigned, not one whose assignment
+      // went stale. The CORE not broadcasting START is what covers that case.
+      if (s->command == SESSION_CMD_START && !g_have_assignment) {
+        Serial.println("NODE: broadcast START ignored -- no assignment held");
+        return;
       }
+      applySessionCommand(s->command);
       return;
     }
 
@@ -1266,13 +1413,70 @@ int WiFiOps::runWardrive(uint32_t currentTime) {
   // Keep the ESP-NOW rendezvous alive (periodic broadcast heartbeat so the CORE
   // registers us and can push our channel assignment + the session start), but
   // do NOT scan or send wardrive data yet.
-  if (this->run_mode == NODE_MODE && !this->session_active) {
+  //
+  // A node with no assignment yet waits here too. `g_have_assignment` is false
+  // until the first admin packet is adopted, and the defaults underneath it are
+  // `assigned_node_count = 1` and the full 0..39 channel range -- i.e. "I am
+  // alone, I sweep everything, and I am the BLE host". Acting on that is how a
+  // fleet ends up with several nodes on BLE and gaps in the channel coverage,
+  // and it is silent: the node looks busy and productive while it is wrong.
+  // Waiting instead costs that node's slice until the packet lands, which the
+  // core sees as a node contributing nothing and shows as unconfirmed.
+  //
+  // Waiting is also the better place to be reached from: the lobby parks on
+  // channel 6 between heartbeats instead of hopping 40 channels, so the core's
+  // next admin packet has a far wider window to land in. [warroom-rig]
+  //
+  // Waiting is only defensible because the core now re-arms a node from its
+  // check-in: it reads back what the node says it is running, and sends the
+  // assignment AND the session command in the same packet. Before that, a node
+  // that rebooted mid-drive waited here forever, contributing nothing, and only
+  // a manual Re-Sync brought it back.
+  const bool node_unassigned = (this->run_mode == NODE_MODE) && !g_have_assignment;
+  if (this->run_mode == NODE_MODE && (!this->session_active || node_unassigned)) {
     if (currentTime - this->last_lobby_hb_ms > LOBBY_HB_INTERVAL_MS) {
       this->last_lobby_hb_ms = currentTime;
       this->setFixedChannel(ESPNOW_CHANNEL);
       this->sendHeartbeat();
     }
     return -1;
+  }
+
+  if (this->run_mode == NODE_MODE) {
+    // A session has begun: forget every BSSID from the last one. The ring is
+    // 200 entries and nothing else ever empties it, so anything seen while
+    // scanning into dead air — after a core left without a STOP, say — would be
+    // silently dropped at the start of this drive.
+    if (g_dedup_reset_pending) {
+      g_dedup_reset_pending = false;
+      this->clearMacHistory();
+      this->mac_history_cursor = 0;
+      Logger::log(STD_MSG, "NODE: dedup ring cleared for new session");
+    }
+
+    // Check-in watchdog. WIFI_SCAN_FAILED means no scan is running and no
+    // results are waiting to be processed, so this can neither disturb a sweep
+    // in flight nor pre-empt one that is about to end in a heartbeat of its
+    // own. That state persisting is exactly the failure it exists for: a slice
+    // this radio cannot tune starts no scan, ends no cycle, sends no heartbeat,
+    // and the CORE drops the node after 60 s.
+    if ((currentTime - (uint32_t)g_last_hb_ms) > NODE_HB_WATCHDOG_MS &&
+        WiFi.scanComplete() == WIFI_SCAN_FAILED) {
+      this->setFixedChannel(ESPNOW_CHANNEL);
+      this->sendHeartbeat();
+    }
+
+    // Core-loss fallback. Armed only once this core has proved it checks in on
+    // us regularly (see g_core_beacons), so an older core that goes quiet after
+    // handing out an assignment cannot trigger it. Back to the lobby means back
+    // to channel 6, where any core can find us again.
+    if (this->session_active && g_core_beacons >= 2 &&
+        (currentTime - (uint32_t)g_last_core_pkt_ms) > NODE_CORE_LOSS_MS) {
+      this->session_active = false;
+      g_core_beacons = 0;
+      Logger::log(WARN_MSG, "NODE: no CORE for 90s -> back to lobby");
+      return -1;
+    }
   }
 
   if ((this->run_mode == SOLO_MODE) || (this->run_mode == NODE_MODE)) {
@@ -1286,12 +1490,18 @@ int WiFiOps::runWardrive(uint32_t currentTime) {
       if (scan_status == WIFI_SCAN_RUNNING) // Scan is still running
         delay(1);
       else if (scan_status == WIFI_SCAN_FAILED) { // Scan is failed or not started
+        bool attempted = true;
         if (this->run_mode == NODE_MODE)
-          this->startNextNodeAssignedScan();
+          attempted = this->startNextNodeAssignedScan();
         else
           WiFi.scanNetworks(true, true, false, CHANNEL_TIMER);
         delay(100);
-        if (WiFi.scanComplete() == WIFI_SCAN_FAILED)
+        // Only a scan we actually tried to start can have failed to start.
+        // A 2.4-only radio holding an all-5-GHz slice deliberately starts none;
+        // warning about that ten times a second would bury the one thing that
+        // matters, which is that it is still checking in and waiting for a
+        // slice it can sweep.
+        if (attempted && WiFi.scanComplete() == WIFI_SCAN_FAILED)
           Logger::log(WARN_MSG, "WiFi scan failed to start!");
       }
       else {
