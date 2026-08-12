@@ -98,6 +98,15 @@ File SDInterface::getFile(String path) {
     //if (file)
     return file;
   }
+
+  // Without this the function fell off its end. fs::File owns a
+  // std::shared_ptr<FileImpl>, so the caller ran a destructor over uninitialised
+  // stack memory -- a refcount decrement through whatever pointer happened to be
+  // there. Reachable with no card in the slot: displayWardriveStats() calls
+  // this behind #ifdef HAS_SD, which says the board *has* a slot, not that a
+  // card mounted. A default-constructed File is the honest answer: it tests
+  // false, and every File method guards on that.
+  return File();
 }
 
 bool SDInterface::removeFile(String file_path) {

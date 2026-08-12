@@ -59,6 +59,38 @@ extern "C" {
   esp_err_t esp_ble_gap_set_rand_addr(const uint8_t *rand_addr);
 }
 
+// --- Standalone wardrive: the CSV is opened by the first row, not by the menu --
+//
+// RunBeaconScan() used to call startLog("wardrive") and write the WigleWifi
+// header the instant WIFI_SCAN_WAR_DRIVE was entered. Buffer::createFile() does
+// open(FILE_WRITE); close(), so the file existed on the card whether or not a
+// single AP was ever appended -- one header-only /wardrive_N.log per visit, all
+// of them matched by WdgwarsUpload::scanForUnsyncedFiles(), all of them offered
+// for upload. Same defect as 52c98c3 (Core Mode) and 0e02e40 (the POI GPX): a
+// resource opened because a mode was entered rather than because work started.
+//
+// Until the log is open the Marauder buffer still points at whatever file the
+// previous mode wrote, with writing == true, so an append would land in *that*
+// file. Every wardrive producer therefore has to go through this gate.
+#ifdef HAS_GPS
+static bool wardrive_log_open = false;    // a log exists for this visit
+static bool wardrive_log_wanted = false;  // an async producer has rows to file
+
+// Loop task only. This does SD I/O -- createFile() probes upward from index 0
+// for a free name and then opens and closes the file -- which is far too much
+// for the promiscuous or NimBLE callbacks: small stacks, and blocking either one
+// stalls its radio. The async producers set wardrive_log_wanted instead and
+// executeWarDrive() picks it up on the next tick.
+static void wardriveOpenLog() {
+  extern WiFiScan wifi_scan_obj;
+  if (wardrive_log_open) return;
+  wifi_scan_obj.startLog("wardrive");
+  buffer_obj.append(wifi_scan_obj.header_line);
+  wardrive_log_open = true;
+  wardrive_log_wanted = false;
+}
+#endif // HAS_GPS
+
 #ifdef HAS_BT
   //ESP32 Sour Apple by RapierXbox
   //Exploit by ECTO-1A
@@ -559,10 +591,31 @@ extern "C" {
                   String wardrive_line = (String)advertisedDevice->getAddress().toString().c_str() + ",,[BLE]," + gps_obj.getDatetime() + ",0," + (String)advertisedDevice->getRSSI() + "," + gps_obj.getLat() + "," + gps_obj.getLon() + "," + gps_obj.getAlt() + "," + gps_obj.getAccuracy() + ",BLE\n";
                   Serial.print(wardrive_line);
 
-                  if (do_save)
-                    buffer_obj.append(wardrive_line);
+                  bool row_filed = false;
+                  if (do_save) {
+                    // NimBLE task: it must not open the log itself (see
+                    // wardriveOpenLog). Until the loop task has, an append would
+                    // land in the previous mode's file, so ask instead. Costs at
+                    // most the devices seen in one tick, and only when BLE beats
+                    // the WiFi scan to the first row of the whole drive.
+                    if (wardrive_log_open) {
+                      buffer_obj.append(wardrive_line);
+                      row_filed = true;
+                    }
+                    else
+                      wardrive_log_wanted = true;
+                  }
 
-                  wifi_scan_obj.save_mac(mac_char);
+                  // Putting a MAC in the dedup list retires it for the rest of
+                  // the drive, so only do that once its row is actually filed.
+                  // Retiring one whose row we just dropped trades a few seconds
+                  // of missing log for losing the device entirely. Devices
+                  // dropped for want of a GPS fix keep the old behaviour: that
+                  // window is unbounded, and re-walking every advertisement
+                  // inside it would cost this callback more than the rows are
+                  // worth.
+                  if (!do_save || row_filed)
+                    wifi_scan_obj.save_mac(mac_char);
 
                   wifi_scan_obj.bt_frames++;
 
@@ -1229,10 +1282,22 @@ extern "C" {
                   String wardrive_line = (String)mac + ",,[BLE]," + gps_obj.getDatetime() + ",0," + (String)rssi + "," + gps_obj.getLat() + "," + gps_obj.getLon() + "," + gps_obj.getAlt() + "," + gps_obj.getAccuracy() + ",BLE\n";
                   Serial.print(wardrive_line);
 
-                  if (do_save)
-                    buffer_obj.append(wardrive_line);
-                    
-                  wifi_scan_obj.save_mac(mac_char);
+                  bool row_filed = false;
+                  if (do_save) {
+                    // NimBLE task -- same gate as the other BLE result path
+                    // above: ask the loop task for the log, never open it here.
+                    if (wardrive_log_open) {
+                      buffer_obj.append(wardrive_line);
+                      row_filed = true;
+                    }
+                    else
+                      wardrive_log_wanted = true;
+                  }
+
+                  // Only retire a MAC whose row was filed -- see the other BLE
+                  // path above for why.
+                  if (!do_save || row_filed)
+                    wifi_scan_obj.save_mac(mac_char);
 
                   #ifndef HAS_NIMBLE_2
                     uint8_t* payLoad = advertisedDevice->getPayload();
@@ -4380,6 +4445,10 @@ void WiFiScan::executeWarDrive() {
       bool do_save;
       String display_string;
 
+      // A BLE or probe-request callback found something it could not file
+      // itself. This is the loop task, so open the log on its behalf.
+      if (wardrive_log_wanted) wardriveOpenLog();
+
       // Reversed
       // Weighted US-focused wardriving channel schedule.
       // 2.4 GHz: 1, 6, 11 prioritized.
@@ -4474,6 +4543,8 @@ void WiFiScan::executeWarDrive() {
           Serial.print((String)this->mac_history_cursor + " | " + wardrive_line);
 
           if (do_save) {
+            // First row of the drive opens the file. Loop task, so it can.
+            wardriveOpenLog();
             buffer_obj.append(wardrive_line);
           }
 
@@ -4904,8 +4975,15 @@ void WiFiScan::RunBeaconScan(uint8_t scan_mode, uint16_t color) {
   else if (scan_mode == WIFI_SCAN_WAR_DRIVE) {
     #ifdef HAS_GPS
       if (gps_obj.getGpsModuleStatus()) {
-        startLog("wardrive");
-        buffer_obj.append(this->header_line);
+        // No startLog() here -- see wardriveOpenLog() at the top of this file.
+        // The first savable row opens the CSV; entering the mode to check the
+        // sat count must not leave a header-only log behind. Arming the gate is
+        // all this path does now.
+        wardrive_log_open = false;
+        wardrive_log_wanted = false;
+        // The POI GPX is different and stays: tagPOI() really can be called in
+        // this mode, and closePoiFile() deletes the file again if it was never
+        // written (StopScan). 0e02e40 covers that half.
         this->openPoiFile();
       } else {
         return;
@@ -7057,7 +7135,11 @@ void WiFiScan::beaconSnifferCallback(void* buf, wifi_promiscuous_pkt_type_t type
         }
 
         if ((do_write) && (!wifi_scan_obj.seen_mac(src_addr))) {
-          wifi_scan_obj.save_mac(src_addr);
+          // Deferred to the bottom of this block: retiring the MAC here would
+          // do it even when the row below is dropped for want of an open log,
+          // and the dedup list is for the rest of the drive. Same reasoning as
+          // the two BLE result paths.
+          bool retire = true;
           #ifdef HAS_GPS
             wifi_scan_obj.flock_devices++;
             String wardrive_line =
@@ -7075,9 +7157,20 @@ void WiFiScan::beaconSnifferCallback(void* buf, wifi_promiscuous_pkt_type_t type
             Serial.print((String)wifi_scan_obj.mac_history_cursor + " | " + wardrive_line);
 
             if (gps_obj.getFixStatus()) {
-              buffer_obj.append(wardrive_line);
+              // WiFi task (promiscuous callback) -- same gate as the BLE paths:
+              // it cannot do the SD work of opening the log, so it asks and the
+              // loop task opens it on the next tick.
+              if (wardrive_log_open)
+                buffer_obj.append(wardrive_line);
+              else {
+                wardrive_log_wanted = true;
+                retire = false;   // dropped row -- give it another chance
+              }
             }
           #endif
+
+          if (retire)
+            wifi_scan_obj.save_mac(src_addr);
         }
       }
     }
