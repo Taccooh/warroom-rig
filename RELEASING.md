@@ -246,8 +246,17 @@ the stock firmware, use Koko's upstream directly. Two node targets share
 
 - **C5-Zero** (`-DC5_ZERO_NODE`) — ESP32-C5, headless. **CDCOnBoot=cdc is
   mandatory** or the serial console stays silent. Prebuilt, field-tested bins +
-  a Python flasher live in `ESP32DualBandWardriver/C5_Py_Flasher_c5zero/`.
-  <!-- TODO: pin the exact ESP32-C5 arduino-cli FQBN here once confirmed. -->
+  a Python flasher live in `ESP32DualBandWardriver/C5_Py_Flasher_c5zero/`. FQBN:
+  `esp32:esp32:esp32c5:CDCOnBoot=cdc,PartitionScheme=huge_app,FlashSize=4M`
+- **Seeed XIAO ESP32-C5** (`-DXIAO_C5_NODE`) — same SoC, different pin map, and
+  it needs **`FlashMode=dio,FlashFreq=40`** as well:
+  `esp32:esp32:esp32c5:CDCOnBoot=cdc,PartitionScheme=huge_app,FlashSize=4M,FlashMode=dio,FlashFreq=40`
+  The core's default QIO/80 MHz does not survive on this module. It fails in a
+  thoroughly misleading way — every region verifies byte-for-byte, esptool reads
+  the partition table back intact, and the bootloader still reports "No bootable
+  app partitions" and loops, because esptool reads through the ROM's settings
+  while the bootloader has already reconfigured the flash from its own header.
+  See the comment at the target in `ESP32DualBandWardriver/src/configs.h`.
 - **NodeMCU-32** (`-DNODEMCU32_NODE`) — standard ESP32, FQBN
   `esp32:esp32:nodemcu-32s`. Not prebuilt; build from source if needed.
 

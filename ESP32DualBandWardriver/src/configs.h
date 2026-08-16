@@ -6,7 +6,8 @@
 // -DC5_ZERO_NODE) or fall back to the default JCMK C5 host board if nothing
 // is set.
 // ===========================================================================
-#if !defined(JCMK_HOST_BOARD) && !defined(NODEMCU32_NODE) && !defined(C5_ZERO_NODE)
+#if !defined(JCMK_HOST_BOARD) && !defined(NODEMCU32_NODE) && !defined(C5_ZERO_NODE) \
+    && !defined(XIAO_C5_NODE)
   #define JCMK_HOST_BOARD
 #endif
 
@@ -164,6 +165,110 @@
 #define ANT_EXTERNAL_LEVEL  HIGH   // TODO verify polarity (schematic truth table / empirical)
 
 #endif // C5_ZERO_NODE
+
+// ---------------------------------------------------------------------------
+// Seeed XIAO ESP32-C5 — headless NODE-only port.
+// Activated with -DXIAO_C5_NODE. Same C5 SoC as the Waveshare C5-Zero and the
+// same job: scan WiFi, ship results over ESP-NOW, let the HUB own display, SD
+// and GPS. It is a separate target rather than a rename because two board
+// differences are load-bearing:
+//
+//   * PSRAM. The XIAO carries 8 MB of it, the Zero has none. Espressif
+//     documents GPIO16 ~ GPIO22 as "usually used for SPI flash and PSRAM, not
+//     recommended for other uses". The Zero build parks its (unwired) GPS UART
+//     on 16/17 — free on that module, sitting on the PSRAM lines here. Opening
+//     that UART reset the chip on every boot: a flash that verified fine, then
+//     a device re-enumerating on USB forever. The UART moves to free pads here.
+//     (Compiling GPS out instead does not work: GpsInterface.cpp is behind
+//     HAS_GPS, but WiFiOps.cpp calls into it unguarded and the link fails. The
+//     pins were the bug, not the feature.)
+//   * Strapping. GPIO2, 7, 25, 27 and 28 are strapping pins on the C5. The Zero
+//     build parks the LED on 28 and the unwired SD/SPI on 2 and 7, and gets
+//     away with it. Every dummy pin below avoids the straps instead — a pin the
+//     firmware holds is a pin that decides the boot mode at the next reset.
+//
+// No antenna switch: the XIAO has no RF switch to select, so ANT_SWITCH_PIN is
+// deliberately absent. Driving a pin for a part that is not on the board buys
+// nothing and risks whatever IS on it.
+//
+// Pins below avoid 13/14 (USB-Serial-JTAG), 16-22 (flash/PSRAM) and the straps.
+// Build: FlashSize=4M, PartitionScheme=min_spiffs, CDCOnBoot=cdc. 4 MB is the
+// proven Zero layout and runs fine on the bigger part; it is deliberately not
+// two changes at once.
+// ---------------------------------------------------------------------------
+#ifdef XIAO_C5_NODE
+
+// THE FLASH FLAGS ARE NOT OPTIONAL HERE. Build this target with
+//   FlashMode=dio,FlashFreq=40
+// on top of the usual CDCOnBoot=cdc,PartitionScheme=huge_app,FlashSize=4M.
+//
+// The core defaults the C5 to QIO at 80 MHz. The Waveshare Zero tolerates that;
+// this module does not. The failure is worth spelling out because it looks like
+// anything except a flash-timing problem: the image writes and verifies
+// byte-for-byte, esptool reads the partition table back perfectly intact, and
+// the second-stage bootloader still says "No bootable app partitions in the
+// partition table" and reboots forever. That asymmetry is the tell. esptool
+// reads through the ROM's conservative settings; the bootloader reconfigures
+// the flash controller from its own image header first, and every read it makes
+// after that comes back as garbage. Before settling into the loop it may also
+// boot once or twice and then die with CPU_LOCKUP, taking the app partition
+// with it -- which reads like a bug in whatever code ran last, and is not.
+#define FIRMWARE_VERSION "v2.2.0-xiaoc5"
+#define DEVICE_NAME      "XIAO C5 Node"
+
+//// Role: NODE only. Headless ESP-NOW probe for a Marauder HUB.
+#define NODE
+
+//// LED — onboard RGB is a WS2812 and not driven by digitalWrite; park it on a
+//// free pad, off the straps. Status is via Serial / the HUB node table.
+#define LED_PIN 24
+
+//// Display — not connected. Pins kept off USB, flash/PSRAM and straps.
+#define TFT_CS   23
+#define TFT_DC   12
+#define TFT_RST  -1
+#define TOUCH_CS -1
+#define TFT_MOSI 11
+#define TFT_SCLK 6
+#define TFT_BL   -1
+
+//// Buttons — not connected; must read "not pressed" at boot, or the wardriver
+//// opens its admin window on a headless node.
+#define U_BTN 9
+#define D_BTN 8
+#define C_BTN 1
+
+#define C_PULL false
+#define U_PULL false
+#define D_PULL false
+
+//// Battery — not wired; default I2C pins for compile sanity.
+#define HAS_BATTERY
+#define I2C_SCL 4
+#define I2C_SDA 5
+
+//// GPS — not wired; the HUB supplies the fix. The UART still opens, so its
+//// pins must be real and harmless: OFF 16-22 (flash/PSRAM, the bug this target
+//// exists for), off 13/14 (USB) and off the straps. GPIO26 is neither a strap
+//// nor a flash pin, and the XIAO has no antenna switch sitting on it.
+#define GPS_SERIAL_INDEX 1
+#define TX_TO_GPS 15
+#define RX_TO_GPS 26
+
+//// SD / shared SPI — not wired; defines exist so the bus can talk into the
+//// void without touching a strap.
+#define SPI_SCK  6
+#define SPI_MISO 3
+#define SPI_MOSI 11
+#define SD_CS    10
+
+//// Device capabilities — same set as the Zero. HAS_PSRAM stays undefined even
+//// though the module has 8 MB: nothing here needs it, and enabling it only
+//// adds an early-boot init that hangs when the line mode does not match.
+#define HAS_GPS
+#define HAS_SD
+
+#endif // XIAO_C5_NODE
 
 // ---------------------------------------------------------------------------
 // NodeMCU-32 (ESP32-WROOM-32) — headless NODE-only port.
