@@ -30,19 +30,33 @@ Switches c_btn = Switches(C_BTN, 1000, C_PULL);
 void setup() {
   Serial.begin(115200);
 
-#ifndef C5_ZERO_NODE
-  // Headless Zero node may run without a host on USB-CDC — never block on it.
-  while (!Serial)
-    delay(10);
-#endif
+  // Wait a moment for a USB-CDC host, but never wait for one indefinitely.
+  //
+  // With CDCOnBoot=cdc, `Serial` only becomes true once a host opens the port.
+  // A node on a bench supply or a power bank has no host and never will, so an
+  // unbounded wait here is a node that boots on a desk and is dead in the field
+  // -- which is exactly how it presented: the XIAOs joined when plugged into the
+  // PC and never joined on the same supply that ran the Waveshare boards fine.
+  //
+  // The exemption used to be spelled `#ifndef C5_ZERO_NODE`, so every target
+  // added afterwards inherited the blocking wait by default. A deadline instead
+  // of a per-board exception keeps the convenience (attach a console within the
+  // window and you still see the whole boot) and cannot single out the next
+  // board somebody adds.
+  {
+    const uint32_t serial_wait_ms = 1500;
+    const uint32_t serial_wait_start = millis();
+    while (!Serial && (millis() - serial_wait_start < serial_wait_ms))
+      delay(10);
+  }
 
-#ifdef C5_ZERO_NODE
   // Diagnostic: log why we (re)booted and how much heap is free, so an
-  // occasional brownout / watchdog / panic during unpaired operation is
-  // visible on the next boot.
+  // occasional brownout / watchdog / panic during unpaired operation is visible
+  // on the next boot. Every headless node wants this, not just the Zero -- it is
+  // the first thing worth reading when one of them fails to come up somewhere
+  // you cannot attach a console.
   Serial.printf("\n[BOOT] reset_reason=%d  free_heap=%u\n",
                 (int)esp_reset_reason(), (unsigned)ESP.getFreeHeap());
-#endif
 
 #ifdef ANT_SWITCH_PIN
   // Waveshare C5-Zero: select the external IPEX antenna via the onboard RF
