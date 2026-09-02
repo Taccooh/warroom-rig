@@ -146,11 +146,26 @@ typedef struct __attribute__((packed)) {
   uint8_t session;                 // SESSION_CMD_STOP / SESSION_CMD_START
 } enow_admin_ext_msg_t;
 
+// Second admin tail, appended after the first. It has its own length gate on
+// both sides rather than a bumped struct_version, so the two halves of a mixed
+// fleet still exchange everything they already understood: an older node reads
+// the 14 bytes it knows and ignores these two, and a node built with this header
+// against an older CORE finds the frame too short and falls back to the rules
+// below. Neither case is worse off than before this existed.
+#define ADMIN_EXT2_FLAG_BLE_HOST 0x01   // this node, and only this node, scans BLE
+
+typedef struct __attribute__((packed)) {
+  enow_admin_ext_msg_t ext1;       // the 14 bytes above, unchanged
+  uint8_t flags;                   // ADMIN_EXT2_FLAG_*
+  uint8_t session_epoch;           // bumped by the CORE per session; 0 = none
+} enow_admin_ext2_msg_t;
+
 // Wire compatibility is byte-for-byte or it is nothing — the CORE has the same
 // assertions against the same numbers.
-static_assert(sizeof(enow_admin_msg_t)     == 10, "enow_admin_msg_t must stay 10 bytes");
-static_assert(sizeof(enow_session_msg_t)   == 6,  "enow_session_msg_t must stay 6 bytes");
-static_assert(sizeof(enow_admin_ext_msg_t) == 14, "enow_admin_ext_msg_t must be 10 stock bytes + 4");
+static_assert(sizeof(enow_admin_msg_t)      == 10, "enow_admin_msg_t must stay 10 bytes");
+static_assert(sizeof(enow_session_msg_t)    == 6,  "enow_session_msg_t must stay 6 bytes");
+static_assert(sizeof(enow_admin_ext_msg_t)  == 14, "enow_admin_ext_msg_t must be 10 stock bytes + 4");
+static_assert(sizeof(enow_admin_ext2_msg_t) == 16, "enow_admin_ext2_msg_t must be the ext1 14 + 2");
 static_assert(sizeof(enow_node_status_t)   <= ENOW_TEXT_MAX,
               "enow_node_status_t must fit in the heartbeat text payload");
 
@@ -210,6 +225,31 @@ class WiFiOps
     uint32_t current_ble_count = 0;
     uint32_t total_net_count = 0;
     uint32_t total_ble_count = 0;
+
+    // Pending BLE sightings, filled by the NimBLE discovery callback and emptied
+    // by the loop task. See queueBleObservation() for why the callback is not
+    // allowed to do the work itself.
+    //
+    // Single producer (the NimBLE host task), single consumer (the loop task),
+    // so head and tail each have exactly one writer and the ring needs no lock.
+    // One slot is always left empty to keep full and empty distinguishable.
+    static const uint8_t ble_pending_len = 32;
+    struct BlePending {
+      uint8_t mac[6];
+      int8_t  rssi;
+    };
+    BlePending ble_pending[ble_pending_len];
+    volatile uint8_t ble_pending_head = 0;   // written by the consumer
+    volatile uint8_t ble_pending_tail = 0;   // written by the producer
+    uint32_t ble_pending_overflow = 0;
+
+    void drainBlePending();
+
+    // Drop the record of the last setFixedChannel(), so the next one runs its
+    // full sequence again. See the comment there: what it does is a workaround,
+    // not just a channel write, and it is skipped only for a repeat of a fix
+    // nothing has disturbed since. Static because setFixedChannel() is.
+    static void invalidateChannelFix();
 
     bool startNextNodeAssignedScan();
     void runAdminWindowAfterScanCycle();
@@ -288,6 +328,9 @@ class WiFiOps
     uint32_t getCurrentBLECount();
     bool seen_mac(unsigned char* mac);
     void save_mac(unsigned char* mac);
+    // Hand a BLE sighting to the loop task. Called from the NimBLE discovery
+    // callback, and deliberately the only thing that callback does.
+    void queueBleObservation(const uint8_t* mac, int8_t rssi);
     void startESPNow();
     bool getHasCore();
     bool getSecureReady();

@@ -142,6 +142,33 @@ typedef struct __attribute__((packed)) {
     uint8_t session;                       // SESSION_CMD_STOP / SESSION_CMD_START
 } enow_admin_ext_msg_t;
 
+// Second admin tail, appended after the first. Two things the node cannot work
+// out for itself:
+//
+//  * Which node scans BLE. The node used to decide this from (index, count) --
+//    "I am the last index, so I am the host". That is unanswerable the moment a
+//    node goes quiet mid-session: the partition is frozen, so the count stays
+//    put while the node holding the top index does not, and the election points
+//    at a slot nobody occupies. BLE then stops fleet-wide until the operator
+//    re-syncs, with nothing on screen to say so. The CORE knows who is actually
+//    here, so the CORE elects and says so.
+//  * Which session this is. A node has to empty its dedup ring when a drive
+//    starts and must NOT empty it on the keepalive admin packets that carry the
+//    same START every few seconds. A counter distinguishes the two; the session
+//    command on its own cannot.
+//
+// It has its own length gate on both sides rather than a bumped struct_version,
+// so a mixed fleet keeps working: an older node reads the 14 bytes it knows and
+// ignores these two, and a newer node talking to an older CORE finds the frame
+// too short and falls back to the (index, count) rule it used before.
+#define ADMIN_EXT2_FLAG_BLE_HOST 0x01   // this node, and only this node, scans BLE
+
+typedef struct __attribute__((packed)) {
+    enow_admin_ext_msg_t ext1;             // the 14 bytes above, unchanged
+    uint8_t flags;                         // ADMIN_EXT2_FLAG_*
+    uint8_t session_epoch;                 // bumped by the CORE per session; 0 = none
+} enow_admin_ext2_msg_t;
+
 // Channel-Tabelle. Byte-exakt aus Wardriver `WiFiOps.cpp:44-53` portiert.
 // 14 x 2.4 GHz + 26 x 5 GHz = 40 Eintraege.
 // Auffaellige Luecke 5GHz: 104+108 fehlen zwischen 100 und 112. Reihe endet bei 177.
@@ -174,6 +201,7 @@ static_assert(sizeof(enow_session_msg_t) == 6,   "enow_session_msg_t must be 6 b
 // the 10 bytes a stock node reads, and the status echo has to fit in the text
 // payload it is carried in.
 static_assert(sizeof(enow_admin_ext_msg_t) == 14, "enow_admin_ext_msg_t must be 10 stock bytes + 4");
+static_assert(sizeof(enow_admin_ext2_msg_t) == 16, "enow_admin_ext2_msg_t must be the ext1 14 + 2");
 static_assert(sizeof(enow_node_status_t)   <= ENOW_TEXT_MAX,
               "enow_node_status_t must fit in the heartbeat text payload");
 

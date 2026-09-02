@@ -39,6 +39,23 @@ static uint8_t g_core_beacons = 0;
 // than in the receive callback keeps the 1.2 kB memset out of the WiFi task.
 static volatile bool g_dedup_reset_pending = false;
 
+// BLE host election, as told to us by the CORE in the admin tail. `told` stays
+// false against a CORE that does not send the second tail, and the scan loop
+// then falls back to deciding from (index, count) as it always did.
+static bool g_ble_host_told = false;
+static bool g_ble_host = false;
+
+// Which session the CORE thinks we are in. The dedup ring has to be emptied
+// when a drive starts and must NOT be emptied by the keepalive admin packets
+// that repeat the same START every few seconds, so "a session began" cannot be
+// read off the session command alone. 0 = no CORE has told us yet.
+static uint8_t g_session_epoch = 0;
+
+// Record of the last setFixedChannel(). File-static because setFixedChannel()
+// is a static member -- see invalidateChannelFix().
+static bool    g_channel_fix_valid = false;
+static uint8_t g_channel_fixed_to  = 0;
+
 // Retry state
 static unsigned long g_last_req_ms = 0;
 static unsigned long g_last_debug_print = 0;
@@ -143,58 +160,52 @@ extern "C" int ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32
     return 0;
 }
 
+// The discovery callback runs on the NimBLE host task, and every millisecond
+// spent in it is a millisecond the controller is not turning advertisement
+// reports into callbacks. It used to build a String, print the whole line to
+// the serial log, retune the WiFi radio (setFixedChannel toggles promiscuous
+// mode twice and printed a line of its own) and then hand the result to
+// ESP-NOW: on the order of ten milliseconds per newly seen device, inside a
+// window that is only BLE_SCAN_DURATION long. A handful of new devices was
+// enough to spend the whole window, and everything advertising after that was
+// never reported at all -- so BLE counts fell off exactly where there was most
+// to find, which is the shape of the field symptom this fixes.
+//
+// The Marauder side already learned this once; see the log entry for
+// "The async producers ask the loop task to open the log rather than opening it
+// themselves; a NimBLE callback doing SD work stalls its own radio."
+//
+// So: dedup-check, copy six bytes, leave. The loop task builds the line, sends
+// it, and only files the MAC once that has actually worked.
 class scanCallbacks : public NimBLEScanCallbacks {
 
   void onDiscovered(const NimBLEAdvertisedDevice* advertisedDevice) override {
     extern WiFiOps wifi_ops;
 
+    if ((wifi_ops.run_mode != SOLO_MODE) && (wifi_ops.run_mode != NODE_MODE))
+      return;
+
+    // SOLO writes straight to the card, and without a fix there is no row to
+    // write. Gate it here rather than in the drain: a refused ESP-NOW send is
+    // worth retrying because the next advertisement is milliseconds away, but a
+    // stretch without a fix is unbounded, and re-queueing every advertisement
+    // through it would cost more than the rows are worth. NODE mode has no such
+    // gate -- the CORE holds the GPS and stamps the row on arrival.
+    if (wifi_ops.run_mode == SOLO_MODE &&
+        !(gps.getGpsModuleStatus() && gps.getFixStatus() && sd_obj.supported))
+      return;
+
     uint8_t macBytes[6];
+    if (!utils.stringToMac(advertisedDevice->getAddress().toString().c_str(), macBytes))
+      return;
 
-    if (wifi_ops.run_mode == SOLO_MODE) {
-      if ((gps.getGpsModuleStatus()) && (gps.getFixStatus()) && (sd_obj.supported)) {
-        
-        utils.stringToMac(advertisedDevice->getAddress().toString().c_str(), macBytes);
+    // Already filed on this drive. Duplicate filtering is off at the controller
+    // (setDuplicateFilter(false) in initBLE), so one device lands here roughly
+    // ten times a second and this is what keeps that free.
+    if (wifi_ops.seen_mac(macBytes))
+      return;
 
-        if (wifi_ops.seen_mac(macBytes))
-          return;
-
-        wifi_ops.save_mac(macBytes);
-
-        wifi_ops.setCurrentBLECount(wifi_ops.getCurrentBLECount() + 1);
-
-        wifi_ops.setTotalBLECount(wifi_ops.getTotalBLECount() + 1);
-
-        bool do_save = false;
-
-        if (gps.getFixStatus())
-          do_save = true;
-
-        String wardrive_line = (String)advertisedDevice->getAddress().toString().c_str() + ",,[BLE]," + gps.getDatetime() + ",0," + (String)advertisedDevice->getRSSI() + "," + gps.getLat() + "," + gps.getLon() + "," + gps.getAlt() + "," + gps.getAccuracy() + ",BLE";
-        Logger::log(GUD_MSG, (String)wifi_ops.mac_history_cursor + " | " + wardrive_line);
-
-        if (do_save)
-          buffer.append(wardrive_line + "\n");
-      }
-    }
-    else if (wifi_ops.run_mode == NODE_MODE) {
-      utils.stringToMac(advertisedDevice->getAddress().toString().c_str(), macBytes);
-
-      if (wifi_ops.seen_mac(macBytes))
-        return;
-
-      wifi_ops.save_mac(macBytes);
-
-      wifi_ops.setCurrentBLECount(wifi_ops.getCurrentBLECount() + 1);
-
-      wifi_ops.setTotalBLECount(wifi_ops.getTotalBLECount() + 1);
-
-      String enow_line = (String)advertisedDevice->getAddress().toString().c_str() + ",,[BLE],0," + (String)(String)advertisedDevice->getRSSI() + ",B";
-      Logger::log(GUD_MSG, (String)wifi_ops.mac_history_cursor + " | " + enow_line);
-      if (wifi_ops.use_encryption)
-        wifi_ops.sendEncryptedStringToCore(enow_line);
-      else
-        wifi_ops.sendBroadcastStringPlain(enow_line);
-    }
+    wifi_ops.queueBleObservation(macBytes, (int8_t)advertisedDevice->getRSSI());
   }
 };
 
@@ -631,6 +642,25 @@ void WiFiOps::debugPrintNodeTable() {
 }
 
 void WiFiOps::setFixedChannel(uint8_t ch) {
+  // Called once per transmitted record, so the cheap case has to be cheap. It
+  // was not: every call toggled promiscuous mode twice, re-set the power-save
+  // mode, and printed "Home channel is now: 6" to the serial log -- around two
+  // milliseconds of blocking, per line, almost always to put the radio on the
+  // channel it was already on. On the BLE path that ran inside the discovery
+  // callback and cost the scan window; on the WiFi path it sat under a batch of
+  // dozens of lines.
+  //
+  // Skip it only for a repeat of a fix we already made and that nothing has
+  // disturbed since -- the 2nd..Nth send of a batch, which is the whole hot
+  // path. Any scan clears channel_fix_valid, so the first call after one still
+  // runs the full sequence. That matters: what this does is not just a channel
+  // change but the promiscuous-toggle workaround the comment above names, and
+  // deciding to skip it from the reported channel alone would silently drop the
+  // workaround whenever a sweep happened to end on the ESP-NOW channel.
+  // [warroom-rig]
+  if (g_channel_fix_valid && g_channel_fixed_to == ch)
+    return;
+
   // Disable power save (prevents weird timing/channel behavior)
   esp_wifi_set_ps(WIFI_PS_NONE);
 
@@ -640,16 +670,23 @@ void WiFiOps::setFixedChannel(uint8_t ch) {
   esp_err_t e = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
   if (e != ESP_OK) {
     Serial.printf("esp_wifi_set_channel failed: %d (0x%X)\n", (int)e, (unsigned)e);
+    // Leave promiscuous mode the way we found it even on the failing path, and
+    // do not record a fix that did not happen.
+    esp_wifi_set_promiscuous(false);
+    g_channel_fix_valid = false;
     return;
   }
 
-  // Verify
-  uint8_t primary = 0;
-  wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
-  esp_wifi_get_channel(&primary, &second);
-  Serial.printf("Home channel is now: %u\n", primary);
-
   esp_wifi_set_promiscuous(false);
+
+  g_channel_fixed_to  = ch;
+  g_channel_fix_valid = true;
+}
+
+// Any scan moves the radio, so the next setFixedChannel() has to run the full
+// sequence again rather than trusting what it did last.
+void WiFiOps::invalidateChannelFix() {
+  g_channel_fix_valid = false;
 }
 
 bool WiFiOps::addPeerWithMode(const uint8_t* mac, bool encrypt, const uint8_t lmk16[16]) {
@@ -767,6 +804,7 @@ bool WiFiOps::startNextNodeAssignedScan() {
   if (assigned_start_idx >= NUM_SCAN_CHANNELS ||
       assigned_end_idx >= NUM_SCAN_CHANNELS ||
       assigned_start_idx > assigned_end_idx) {
+    this->invalidateChannelFix();
     WiFi.scanNetworks(true, true, false, 80);
     return true;
   }
@@ -803,6 +841,7 @@ bool WiFiOps::startNextNodeAssignedScan() {
   }
 #endif
   uint8_t channel = scan_channels[current_assigned_scan_idx];
+  this->invalidateChannelFix();
   WiFi.scanNetworks(true, true, false, 80, channel);
 
   current_assigned_scan_idx++;
@@ -1220,6 +1259,35 @@ void WiFiOps::OnDataRecv(const esp_now_recv_info_t* info, const uint8_t* data, i
         const enow_admin_ext_msg_t* ext = (const enow_admin_ext_msg_t*)data;
         if (ext->tag[0] == ENOW_EXT_TAG0 && ext->tag[1] == ENOW_EXT_TAG1 &&
             ext->struct_version == ENOW_ADMIN_EXT_VER) {
+
+          // Second tail, gated on its own length so an older CORE that sends
+          // only the first one still works exactly as it did.
+          if (len >= (int)sizeof(enow_admin_ext2_msg_t)) {
+            const enow_admin_ext2_msg_t* ext2 = (const enow_admin_ext2_msg_t*)data;
+
+            const bool host = (ext2->flags & ADMIN_EXT2_FLAG_BLE_HOST) != 0;
+            if (!g_ble_host_told || host != g_ble_host)
+              Serial.printf("NODE: BLE host = %s (told by CORE)\n", host ? "yes" : "no");
+            g_ble_host_told = true;
+            g_ble_host = host;
+
+            // A new session, not another keepalive repeating the same START.
+            // Empty the dedup ring here rather than in applySessionCommand():
+            // that one only fires on a change of session state, so a CORE that
+            // restarted inside the node's 90-second core-loss window found the
+            // node already collecting, changed nothing, and the whole previous
+            // drive stayed in the ring — on the second run over the same route,
+            // which is precisely where it is least welcome. [warroom-rig]
+            if (ext2->session_epoch != 0 && ext2->session_epoch != g_session_epoch) {
+              g_session_epoch = ext2->session_epoch;
+              if (ext2->ext1.session == SESSION_CMD_START) {
+                g_dedup_reset_pending = true;
+                Serial.printf("NODE: session epoch %u -> dedup ring will be cleared\n",
+                              (unsigned)g_session_epoch);
+              }
+            }
+          }
+
           applySessionCommand(ext->session);
         }
       }
@@ -1261,6 +1329,9 @@ void WiFiOps::OnDataRecv(const esp_now_recv_info_t* info, const uint8_t* data, i
 }
 
 void WiFiOps::startESPNow() {
+  // Whatever brought the radio up, it was not us: start from no cached fix, so
+  // the channel really does get set here.
+  this->invalidateChannelFix();
   this->setFixedChannel(ESPNOW_CHANNEL);
   this->computeKeysFromEnowKey();
 
@@ -1405,6 +1476,121 @@ void WiFiOps::scanBLE() {
   //Logger::log(STD_MSG, "Completed BLE scan");
 }
 
+// Producer half of the BLE hand-off, called from the NimBLE discovery callback.
+// The only work it is allowed to do is the work that cannot be deferred.
+void WiFiOps::queueBleObservation(const uint8_t* mac, int8_t rssi) {
+  const uint8_t tail = this->ble_pending_tail;
+  const uint8_t next = (uint8_t)((tail + 1) % ble_pending_len);
+
+  if (next == this->ble_pending_head) {
+    // Full. Dropping is safe here in a way it was not before: nothing has been
+    // filed for this device yet, so the next advertisement -- tens of
+    // milliseconds away -- simply queues it again. Filing the MAC only after a
+    // successful send is what turns a hard loss into a retry.
+    this->ble_pending_overflow++;
+    return;
+  }
+
+  // Suppress a device that is already waiting. Its MAC is not in mac_history
+  // yet, so seen_mac() says nothing about it, and without this one busy
+  // advertiser fills the ring on its own before the loop task gets a turn.
+  //
+  // This walks slots the consumer may be releasing underneath us. The worst a
+  // stale read can do is miss a match and emit the device twice, which the CORE
+  // tolerates -- it does not deduplicate by design.
+  for (uint8_t i = this->ble_pending_head; i != tail;
+       i = (uint8_t)((i + 1) % ble_pending_len)) {
+    if (memcmp(this->ble_pending[i].mac, mac, 6) == 0)
+      return;
+  }
+
+  memcpy(this->ble_pending[tail].mac, mac, 6);
+  this->ble_pending[tail].rssi = rssi;
+  this->ble_pending_tail = next;   // publish the slot last
+}
+
+// Consumer half, called from the loop task, where blocking costs nothing that
+// matters: this is the serial logging, radio retuning and ESP-NOW work the
+// discovery callback used to do inline while the BLE controller waited.
+void WiFiOps::drainBlePending() {
+  while (this->ble_pending_head != this->ble_pending_tail) {
+    const uint8_t head = this->ble_pending_head;
+
+    uint8_t mac[6];
+    memcpy(mac, this->ble_pending[head].mac, 6);
+    const int8_t rssi = this->ble_pending[head].rssi;
+
+    // Release the slot before doing anything slow, so the producer has room to
+    // keep working while we do.
+    this->ble_pending_head = (uint8_t)((head + 1) % ble_pending_len);
+
+    // It may have been filed since it was queued -- a duplicate that slipped
+    // past the producer-side walk above.
+    if (this->seen_mac(mac))
+      continue;
+
+    // Lowercase, colon-separated: byte for byte what NimBLEAddress::toString()
+    // produced when this line was still built in the callback. The text of the
+    // field is the device's identity everywhere downstream, so the format is
+    // not free to drift.
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    bool filed = false;
+
+    if (this->run_mode == SOLO_MODE) {
+      if (gps.getGpsModuleStatus() && gps.getFixStatus() && sd_obj.supported) {
+        String wardrive_line = (String)mac_str + ",,[BLE]," + gps.getDatetime() +
+                               ",0," + (String)rssi + "," + gps.getLat() + "," +
+                               gps.getLon() + "," + gps.getAlt() + "," +
+                               gps.getAccuracy() + ",BLE";
+        Logger::log(GUD_MSG, (String)this->mac_history_cursor + " | " + wardrive_line);
+        buffer.append(wardrive_line + "\n");
+        // Buffer::append() is void on this side, so "filed" here means the same
+        // thing it always did: handed over. The NODE path below can do better.
+        filed = true;
+      }
+    }
+    else {
+      String enow_line = (String)mac_str + ",,[BLE],0," + (String)rssi + ",B";
+      Logger::log(GUD_MSG, (String)this->mac_history_cursor + " | " + enow_line);
+      filed = this->use_encryption ? this->sendEncryptedStringToCore(enow_line)
+                                   : this->sendBroadcastStringPlain(enow_line);
+      // The same pacing the WiFi batch needs in processWardrive(), and for a
+      // sharper reason: ESP-NOW cannot absorb back-to-back sends, and a BLE
+      // sighting lost there is gone for good. An AP sits still and is swept
+      // again next cycle; a stranger's phone is in range for the few seconds it
+      // takes to drive past. Moving the work out of the callback without this
+      // would only have moved the burst, not removed it.
+      if (filed) delay(20);
+    }
+
+    if (filed) {
+      // Only now. Marking the MAC seen before the row exists retires the device
+      // for the rest of the drive on the strength of a row nobody received.
+      this->save_mac(mac);
+      this->setCurrentBLECount(this->getCurrentBLECount() + 1);
+      this->setTotalBLECount(this->getTotalBLECount() + 1);
+    }
+  }
+
+  // Say when the ring has been overrunning. It is not a loss -- an unfiled MAC
+  // comes back on the device's next advertisement -- but a rising count means
+  // sightings are arriving faster than a 20 ms-paced link can carry them, which
+  // is worth knowing before drawing conclusions from a thin BLE column. Quiet
+  // while it is zero, and rate-limited so a dense street cannot flood the log.
+  static uint32_t last_reported = 0;
+  static unsigned long last_report_ms = 0;
+  if (this->ble_pending_overflow != last_reported &&
+      (millis() - last_report_ms) >= DEBUG_OUTPUT_DELAY) {
+    last_reported  = this->ble_pending_overflow;
+    last_report_ms = millis();
+    Logger::log(WARN_MSG, "NODE: BLE queue overran " + (String)last_reported +
+                          "x (sightings retried, not lost)");
+  }
+}
+
 int WiFiOps::runWardrive(uint32_t currentTime) {
 
   int scan_status = -1;
@@ -1451,6 +1637,9 @@ int WiFiOps::runWardrive(uint32_t currentTime) {
       g_dedup_reset_pending = false;
       this->clearMacHistory();
       this->mac_history_cursor = 0;
+      // Anything still queued was seen before this session and would be filed
+      // against this drive's GPS track, which is worse than not filing it.
+      this->ble_pending_head = this->ble_pending_tail;
       Logger::log(STD_MSG, "NODE: dedup ring cleared for new session");
     }
 
@@ -1494,6 +1683,7 @@ int WiFiOps::runWardrive(uint32_t currentTime) {
         if (this->run_mode == NODE_MODE)
           attempted = this->startNextNodeAssignedScan();
         else
+          this->invalidateChannelFix();
           WiFi.scanNetworks(true, true, false, CHANNEL_TIMER);
         delay(100);
         // Only a scan we actually tried to start can have failed to start.
@@ -1522,13 +1712,29 @@ int WiFiOps::runWardrive(uint32_t currentTime) {
         // bewusst nicht). Gewaehlt wird die HOECHSTE Index-Node: die hat den
         // 5-GHz-Slice = wenigste APs = meiste freie Zeit fuer BLE, minimaler
         // Einfluss auf den Sweep. SOLO / Einzel-Node scannt immer selbst.
-        bool ble_host = (run_mode == SOLO_MODE) || (assigned_node_count <= 1) ||
-                        (assigned_node_index == assigned_node_count - 1);
+        //
+        // Who that is, is the CORE's call now (ADMIN_EXT2_FLAG_BLE_HOST). Working
+        // it out locally from (index, count) is the fallback for an older CORE,
+        // and it cannot survive a node going quiet mid-session: the partition is
+        // frozen, so the count keeps counting a node that is no longer there and
+        // the election points at nobody at all. BLE then stopped fleet-wide,
+        // until the operator happened to press Re-Sync, with nothing on screen
+        // to say why. [warroom-rig]
+        bool ble_host;
+        if (run_mode == SOLO_MODE)  ble_host = true;
+        else if (g_ble_host_told)   ble_host = g_ble_host;
+        else                        ble_host = (assigned_node_count <= 1) ||
+                                               (assigned_node_index == assigned_node_count - 1);
+
         if (current_assigned_scan_idx == assigned_start_idx && ble_host)
           this->scanBLE();
 
         while(pBLEScan->isScanning())
           delay(1);
+
+        // Send what the discovery callback queued, now that the radio is ours
+        // again and blocking costs nothing but our own sweep.
+        this->drainBlePending();
 
         if ((this->run_mode == NODE_MODE) && (current_assigned_scan_idx == assigned_start_idx))
           this->runAdminWindowAfterScanCycle();
@@ -1537,6 +1743,7 @@ int WiFiOps::runWardrive(uint32_t currentTime) {
         if (this->run_mode == NODE_MODE)
           this->startNextNodeAssignedScan();
         else
+          this->invalidateChannelFix();
           WiFi.scanNetworks(true, true, false, CHANNEL_TIMER);
       }
     }
@@ -1571,7 +1778,11 @@ void WiFiOps::processWardrive(uint16_t networks) {
       if (this->seen_mac(this_bssid_raw))
         continue;
 
-      this->save_mac(this_bssid_raw);
+      // NOTE: the NODE branch below files this MAC only once the record has
+      // actually gone out. SOLO files it here, as it always has, because
+      // Buffer::append() on this side reports nothing back.
+      if (this->run_mode == SOLO_MODE)
+        this->save_mac(this_bssid_raw);
 
       if (this->run_mode == SOLO_MODE) {
         this->setCurrentNetCount(this->getCurrentNetCount() + 1);
@@ -1629,10 +1840,16 @@ void WiFiOps::processWardrive(uint16_t networks) {
         ssid.replace(",","_");
         String enow_line = WiFi.BSSIDstr(i) + "," + ssid + "," + this->security_int_to_string(WiFi.encryptionType(i)) + "," + (String)WiFi.channel(i) + "," + (String)WiFi.RSSI(i) + ",W";
         Logger::log(GUD_MSG, (String)this->mac_history_cursor + " | " + enow_line);
-        if (this->use_encryption)
-          this->sendEncryptedStringToCore(enow_line);
-        else
-          this->sendBroadcastStringPlain(enow_line);
+        const bool sent = this->use_encryption
+                            ? this->sendEncryptedStringToCore(enow_line)
+                            : this->sendBroadcastStringPlain(enow_line);
+
+        // File the MAC only now. Marking it seen before the send means a
+        // refused packet retires the AP for the whole drive on the strength of
+        // a record nobody received; leaving it unfiled costs one duplicate at
+        // worst and the CORE does not deduplicate anyway. [warroom-rig]
+        if (sent)
+          this->save_mac(this_bssid_raw);
 
         // Pace the batch. WiFi finds are node-side deduped (seen_mac above), so
         // every AP is transmitted exactly ONCE. ESP-NOW cannot absorb a

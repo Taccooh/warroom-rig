@@ -259,9 +259,22 @@ private:
     // Index of a channel number in scan_channels[], or 0xFF if it is not one.
     static uint8_t scanIndexOfChannel(uint8_t channel);
 
-    // True when this slot should be the one collecting BLE, evaluated against the
-    // frozen partition -- the same predicate the node runs.
+    // Slot that should be collecting BLE: the highest assigned index among the
+    // nodes that are actually here, not the highest index in the partition.
+    // 0xFF when there is nobody to elect.
+    uint8_t bleHostSlot() const;
+
+    // True when this slot is that one. Also the predicate the node's records are
+    // judged against in observeAssignmentEvidence().
     bool slotIsBleHost(uint8_t slot) const;
+
+    // Re-run the election and, if it moved, make sure both the outgoing and the
+    // incoming host hear about it at the next opportunity rather than at the
+    // next keepalive.
+    void refreshBleHostElection();
+
+    // Advance session_epoch, skipping 0. Called where a drive begins.
+    void bumpSessionEpoch();
 
     // ---- ESP-NOW-Send ----
     bool sendCoreReply(const uint8_t* destMac);
@@ -326,7 +339,26 @@ private:
     // count used to be read per packet, two nodes of the *same* partition could
     // receive different counts and both conclude they were the host, or neither.
     // 0 means "no partition yet".
+    //
+    // The BLE election no longer rides on this pair alone: the CORE names the
+    // host outright in the admin tail (ADMIN_EXT2_FLAG_BLE_HOST), because
+    // "highest index in the partition" answers the wrong question the moment
+    // that node goes quiet -- its slot is reserved, the count stays put, and the
+    // index it names belongs to nobody. The pair is still sent, and still means
+    // what it says, for nodes built before that tail existed.
     uint8_t       partition_node_count;
+
+    // Slot currently elected to collect BLE, as last handed out. Kept so a
+    // change of host can be pushed at once rather than waiting out the
+    // keepalive -- until the new host is told, nobody in the fleet scans BLE.
+    // 0xFF = nobody.
+    uint8_t       ble_host_slot;
+
+    // Bumped on every startSession()/resyncSession(), sent in the admin tail. A
+    // node empties its dedup ring when this changes, which the session command
+    // cannot express on its own: keepalives repeat START for the whole drive.
+    // Never 0 once a session has started; 0 is the node's "never been told".
+    uint8_t       session_epoch;
 
     // Counter fuer Display + Stats.
     uint32_t total_rx_lines;             // alle akzeptierten Wigle-Lines

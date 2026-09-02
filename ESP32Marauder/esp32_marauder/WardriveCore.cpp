@@ -98,6 +98,8 @@ WardriveCore::WardriveCore() {
     user_key = "";
     assignment_version = 1;
     partition_node_count = 0;   // no partition until nodes register
+    ble_host_slot = 0xFF;       // nobody elected yet
+    session_epoch = 0;          // no session has started
     total_rx_lines = 0;
     total_rx_wifi = 0;
     total_rx_ble = 0;
@@ -433,6 +435,9 @@ void WardriveCore::handleNodeTopologyChange() {
     }
     recalculateChannelAssignments();
     markAllActiveNodesAdminDirty();
+    // Indices just moved, so the host may have too. Everyone is dirty already;
+    // this only keeps ble_host_slot from lagging a partition behind.
+    refreshBleHostElection();
 }
 
 uint8_t WardriveCore::getActiveNodeCount() {
@@ -512,11 +517,27 @@ void WardriveCore::rearmAllNodesOnSessionChange() {
     }
 }
 
+// One drive. Bumping the epoch is what tells every node to empty its dedup ring
+// -- the session command cannot, because the keepalive admin packets repeat
+// START for the whole session and a ring cleared every few seconds is no ring at
+// all. Skipping 0 keeps it distinct from a node's "no CORE has told me yet".
+void WardriveCore::bumpSessionEpoch() {
+    session_epoch++;
+    if (session_epoch == 0) session_epoch = 1;
+}
+
 void WardriveCore::startSession() {
     if (!is_running) return;
     ensureLogOpen();
+    const bool was_collecting = collecting;
     collecting = true;
-    Serial.printf("CORE: SESSION START (%u nodes)\n", getActiveNodeCount());
+    // A drive begins where collecting begins, and nowhere else. Pressing Start
+    // on a session that is already running must not wipe the fleet's dedup
+    // rings: every AP still in range would be reported again.
+    if (!was_collecting) bumpSessionEpoch();
+    refreshBleHostElection();
+    Serial.printf("CORE: SESSION START (%u nodes, epoch %u)\n",
+                  getActiveNodeCount(), (unsigned)session_epoch);
     // No broadcast START, deliberately. A broadcast says "collect" to every node
     // in earshot, including one still holding a stale assignment from an earlier
     // partition: it sweeps the wrong slice, and if its old index happened to be
@@ -544,8 +565,15 @@ void WardriveCore::resyncSession() {
     // partitionieren; das neue Admin geht per Check-in raus, START breit.
     handleNodeTopologyChange();
     ensureLogOpen();   // resync can be the first thing that starts collecting
+    const bool was_collecting = collecting;
     collecting = true;
-    Serial.printf("CORE: SESSION RESYNC + START (%u nodes)\n", getActiveNodeCount());
+    // Same rule as startSession(): only a re-sync that is itself the start of
+    // the drive counts as a new session. A mid-drive re-sync re-cuts the
+    // channels and must leave what the fleet has already filed alone.
+    if (!was_collecting) bumpSessionEpoch();
+    refreshBleHostElection();
+    Serial.printf("CORE: SESSION RESYNC + START (%u nodes, epoch %u)\n",
+                  getActiveNodeCount(), (unsigned)session_epoch);
     // Per-node only -- see startSession() for why START is never broadcast.
     // Doubly true here: a re-sync exists precisely because the partition just
     // changed, so every node's held assignment is suspect until it checks in.
@@ -615,12 +643,15 @@ bool WardriveCore::sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac) {
     if (slot >= WARDRIVE_CORE_MAX_NODES) return false;
     if (!(node_table[slot].flags & NODE_FLAG_ACTIVE)) return false;
 
-    // The stock 10 bytes plus our 4-byte tail. A stock node bounds its MSG_ADMIN
+    // The stock 10 bytes plus our two tails. A stock node bounds its MSG_ADMIN
     // handler with `len < sizeof(enow_admin_msg_t)` and then casts, so a longer
-    // frame is read as the 10 bytes it knows and the tail is ignored. Ours reads
-    // the tail and learns the session state at the same time, which is what
-    // re-arms a node that rebooted or missed a broadcast.
-    enow_admin_ext_msg_t ext = {};
+    // frame is read as the 10 bytes it knows and the rest is ignored; a node
+    // that knows only the first tail reads 14 and ignores the second. Ours reads
+    // both and learns the session state, the session identity and its BLE role
+    // at the same time, which is what re-arms a node that rebooted or missed a
+    // broadcast.
+    enow_admin_ext2_msg_t ext2 = {};
+    enow_admin_ext_msg_t& ext = ext2.ext1;
     enow_admin_msg_t& msg = ext.base;
     memcpy(msg.magic, ENOW_MAGIC, 4);
     msg.type = MSG_ADMIN;
@@ -635,6 +666,11 @@ bool WardriveCore::sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac) {
     ext.tag[1] = ENOW_EXT_TAG1;
     ext.struct_version = ENOW_ADMIN_EXT_VER;
     ext.session = desiredSessionFor(slot);
+
+    // Second tail: who scans BLE, and which session this is. A node built
+    // before this existed reads the 14 bytes it knows and ignores these two.
+    ext2.flags = slotIsBleHost(slot) ? ADMIN_EXT2_FLAG_BLE_HOST : 0;
+    ext2.session_epoch = session_epoch;
 
     // Temporary plaintext peer. Wir loeschen ihn sofort danach, damit der
     // regulaere encrypted Peer (falls vorhanden) wieder aktiv ist.
@@ -651,7 +687,7 @@ bool WardriveCore::sendAdminToNodeSlot(uint8_t slot, const uint8_t* dest_mac) {
         return false;
     }
 
-    esp_err_t res = esp_now_send(dest_mac, (uint8_t*)&ext, sizeof(ext));
+    esp_err_t res = esp_now_send(dest_mac, (uint8_t*)&ext2, sizeof(ext2));
     esp_now_del_peer(dest_mac);
 
     if (res != ESP_OK) {
@@ -774,10 +810,63 @@ uint8_t WardriveCore::scanIndexOfChannel(uint8_t channel) {
     return 0xFF;
 }
 
+// The highest assigned index among nodes that are ACTUALLY HERE.
+//
+// This used to be `assigned_index == partition_node_count - 1`, which is the
+// same answer right up until the node holding the top index goes quiet. Its
+// slot is then reserved rather than freed -- deliberately, so it keeps its slice
+// across a reboot or a minute behind a hill -- and the partition is frozen, so
+// the count keeps counting it. The predicate then names an index nobody
+// occupies: not one node in the fleet believes it is the host, BLE stops
+// entirely, and the only cure was the operator noticing and pressing Re-Sync.
+// The 5-GHz slice at the top of the pool goes unswept for the same stretch, so
+// the WiFi count drops at the same time -- just by less, because that is one
+// node's share of the channels rather than all of the BLE. [warroom-rig]
+uint8_t WardriveCore::bleHostSlot() const {
+    uint8_t best_slot = 0xFF;
+    uint8_t best_idx  = 0;
+    for (uint8_t i = 0; i < WARDRIVE_CORE_MAX_NODES; i++) {
+        if (!(node_table[i].flags & NODE_FLAG_ACTIVE)) continue;
+        if (!(node_table[i].flags & NODE_FLAG_PARTITIONED)) continue;
+        if (best_slot == 0xFF || node_table[i].assigned_index > best_idx) {
+            best_slot = i;
+            best_idx  = node_table[i].assigned_index;
+        }
+    }
+    return best_slot;
+}
+
 bool WardriveCore::slotIsBleHost(uint8_t slot) const {
+    if (slot >= WARDRIVE_CORE_MAX_NODES) return false;
     if (partition_node_count == 0) return false;
-    if (partition_node_count <= 1) return true;
-    return node_table[slot].assigned_index == partition_node_count - 1;
+    return bleHostSlot() == slot;
+}
+
+// Called wherever the fleet's membership can have changed. A host that has gone
+// away cannot be told anything, but marking it dirty is free and puts it right
+// if it comes back; the incoming host is the one that matters, and it gets the
+// fast resend cadence rather than waiting out a keepalive with the fleet's BLE
+// switched off.
+void WardriveCore::refreshBleHostElection() {
+    const uint8_t now_host = bleHostSlot();
+    if (now_host == ble_host_slot) return;
+
+    const uint8_t was_host = ble_host_slot;
+    ble_host_slot = now_host;
+
+    if (was_host < WARDRIVE_CORE_MAX_NODES &&
+        (node_table[was_host].flags & NODE_FLAG_ACTIVE)) {
+        node_table[was_host].flags |= NODE_FLAG_ADMIN_DIRTY;
+        node_table[was_host].admin_last_send_ms = 0;
+    }
+    if (now_host < WARDRIVE_CORE_MAX_NODES) {
+        node_table[now_host].flags |= NODE_FLAG_ADMIN_DIRTY;
+        node_table[now_host].admin_last_send_ms = 0;
+        Serial.printf("CORE: BLE host -> slot %u (suffix %04X)\n",
+                      now_host, node_table[now_host].mac_suffix);
+    } else {
+        Serial.println("CORE: BLE host -> none (no partitioned node present)");
+    }
 }
 
 // Read a node's live assignment back out of the records it sends.
@@ -1261,6 +1350,12 @@ void WardriveCore::init() {
     // too, which is the best a one-byte counter allows.
     assignment_version = (uint8_t)(esp_random() % 255) + 1;   // 1..255, never 0
     partition_node_count = 0;   // no partition until nodes register
+    ble_host_slot = 0xFF;       // nobody elected yet
+    // Random for the same reason as assignment_version: a node that stayed
+    // powered through a CORE restart must not mistake the new CORE's first
+    // session for the one it is already in, or it keeps a whole drive's worth of
+    // MACs in its dedup ring and reports almost nothing on the next run.
+    session_epoch = (uint8_t)(esp_random() % 255) + 1;        // 1..255, never 0
     session_start_ms = millis();
     last_display_refresh_ms = 0;
     last_stale_check_ms = 0;
@@ -1516,6 +1611,12 @@ void WardriveCore::runTick(uint32_t currentTime) {
         if (removeStaleNodes() && !collecting) {
             handleNodeTopologyChange();
         }
+        // Membership can have changed either way here -- a node timed out into a
+        // reserved slot above, or one came back and touchNode() reclaimed it --
+        // and during a session neither path re-partitions. The BLE host is the
+        // one thing that must not be left pointing at a node that is not there,
+        // so it is re-elected on the same tick rather than at the next Re-Sync.
+        refreshBleHostElection();
     }
 
     // 3) Periodischer Heap-Check (Failure-Mode 6.10).
@@ -1824,12 +1925,37 @@ void WardriveCore::refreshCoreDisplay() {
         if (collecting) snprintf(buf, sizeof(buf), "%u/min   ", (unsigned)rate_lines_per_min);
         else            snprintf(buf, sizeof(buf), "idle     ");
         tft.print(buf);
+        // Fixed 13-character field: the drop counter starts at x=196 and the
+        // node count changes width as nodes come and go, so letting this one run
+        // to its natural length leaves a stale glyph behind when it shrinks.
         tft.setCursor(116, WC_HERO_Y + WC_SUB_DY);
-        snprintf(buf, sizeof(buf), "n %u/%u  ch %u   ",
+        snprintf(buf, sizeof(buf), "n %u/%u ch %u",
                  (unsigned)getActiveNodeCount(),
                  (unsigned)WARDRIVE_CORE_MAX_NODES,
                  (unsigned)WARDRIVE_CORE_CHANNEL);
-        tft.print(buf);
+        tft.printf("%-13s", buf);
+
+        // Records that reached this radio and were thrown away anyway: the rx
+        // queue overflowing, or a payload that would not parse. Blank while it
+        // is zero, red the moment it is not.
+        //
+        // This was the one number that mattered and could not be seen. A node
+        // deduplicates before it transmits, so a record dropped here is not
+        // retried and not logged -- the drive simply comes back thinner, and
+        // nothing on the console distinguishes that from a quiet street. It is
+        // also the fastest way to tell a firmware fault from a real one: a rig
+        // that is losing rows says so here. [warroom-rig]
+        const uint32_t lost = total_rx_drops + total_rx_bad;
+        tft.setTextColor(lost ? TFT_RED : WC_DIM, WC_PANEL);
+        tft.setCursor(196, WC_HERO_Y + WC_SUB_DY);
+        if (lost) {
+            wcFmt(buf, sizeof(buf), lost);
+            char lb[8];
+            snprintf(lb, sizeof(lb), "!%s", buf);
+            tft.printf("%-5s", lb);
+        } else {
+            tft.print("     ");
+        }
 
         // ---- node rows ----
         // Compact the active slots so the table shows no gaps after a dropout.
@@ -1892,19 +2018,17 @@ void WardriveCore::refreshCoreDisplay() {
             tft.setTextSize(1);
 
             // Assigned channel slice, in gold, plus a BLE marker on the node that
-            // also runs the BLE scanner. No protocol field needed: the node derives
-            // its BLE role from the admin packet WE send —
-            //   ble_host = (node_count <= 1) || (node_index == node_count - 1)
-            // (WiFiOps.cpp) — so evaluating that predicate here is exact, as long
-            // as it is fed the same numbers the node was.
+            // also runs the BLE scanner. The election itself is the CORE's and
+            // travels in the admin tail, so the marker and the node now read the
+            // same decision out of the same function instead of each evaluating
+            // a predicate and hoping they were fed identical numbers.
             //
-            // It used to be fed the *live* active-node count instead, which is a
-            // different number as soon as a node drops: the marker then sat on a
-            // node that was not collecting BLE while the one that was showed
-            // nothing. Both values now come from the partition.
-            const bool ble_host = (partition_node_count > 0) &&
-                                  ((partition_node_count <= 1) ||
-                                   (nr.assigned_index == partition_node_count - 1));
+            // Two earlier versions of this got it wrong in ways the screen could
+            // not show: first a live active-node count next to a frozen index,
+            // then the frozen pair -- correct until the node holding the top
+            // index went quiet, after which the marker pointed at a reserved
+            // slot and no node ran BLE at all.
+            const bool ble_host = slotIsBleHost(slots[k]);
             tft.setTextColor(WC_GOLD, rowbg);
             tft.setCursor(WC_X_SLICE, ty);
             // A leading marker means the slice shown is what we asked for, not
