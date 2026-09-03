@@ -52,34 +52,29 @@ static const uint16_t RV_RED    = RigTheme::RED;
 namespace {
 struct RVMode { uint8_t mode; const char* title; uint8_t band; };  // band 0=2.4GHz 1=BLE
 const RVMode RV_MODES[] = {
-    { WIFI_SCAN_PROBE,             "PROBES",   0 },
-    { WIFI_SCAN_AP,                "BEACONS",  0 },
-    { WIFI_SCAN_ALL,              "WIFI ALL",  0 },
-    { WIFI_SCAN_DEAUTH,            "DEAUTH",   0 },
-    { WIFI_SCAN_EAPOL,            "EAPOL",     0 },
-    { WIFI_SCAN_ACTIVE_EAPOL,    "EAPOL+",     0 },
-    { WIFI_SCAN_RAW_CAPTURE,     "RAW CAP",    0 },
-    { WIFI_SCAN_STATION,         "STATIONS",   0 },
-    { WIFI_SCAN_SIG_STREN,        "SIGNAL",   0 },
-    { WIFI_SCAN_WAR_DRIVE,       "WARDRIVE",   0 },
-    { WIFI_SCAN_STATION_WAR_DRIVE,"STA WD",    0 },
-    { WIFI_SCAN_AP_STA,          "AP + STA",   0 },
-    { WIFI_SCAN_ESPRESSIF,       "ESPRESSIF",  0 },
-    { WIFI_SCAN_MULTISSID,       "MULTISSID",  0 },
-    { WIFI_SCAN_PWN,             "PWNGOTCHI",  0 },
-    { WIFI_SCAN_DETECT_FOLLOW,   "FOLLOW",     0 },
-    { WIFI_SCAN_PINESCAN,        "PINE AP",    0 },
-    { BT_SCAN_ALL,               "BT SCAN",    1 },
+    // Only modes that narrate their sightings into display_obj.display_buffer --
+    // the ones that drew the green scrolling console. Modes that paint their own
+    // graphics (the EAPOL/raw-capture channel-scale UI, the channel and BT graph
+    // analyzers, the packet monitor, Fox Hunt's meter) are deliberately absent:
+    // clearing the screen for a feed would wipe a UI that never comes back.
+    // Those become the Meter and Spectrum instruments in a later pass.
+    { WIFI_SCAN_PROBE,             "PROBES",   0 },   // RunProbeScan
+    { WIFI_SCAN_AP,                "BEACONS",  0 },   // RunBeaconScan
+    { WIFI_SCAN_DEAUTH,            "DEAUTH",   0 },   // RunDeauthScan (detector)
+    { WIFI_SCAN_PWN,              "PWNGOTCHI", 0 },   // RunPwnScan
+    { WIFI_SCAN_PINESCAN,         "PINE AP",   0 },   // RunPineScan
+    { WIFI_SCAN_MULTISSID,       "MULTISSID",  0 },   // RunMultiSSIDScan
+    { WIFI_SCAN_AP_STA,          "AP + STA",   0 },   // RunAPScan
+    { WIFI_SCAN_WAR_DRIVE,       "WARDRIVE",   0 },   // RunBeaconScan + BT
+    { WIFI_SCAN_DETECT_FOLLOW,   "MAC MON",    0 },   // RunProbeScan + BT
+    { BT_SCAN_ALL,               "BT SCAN",    1 },   // RunBluetoothScan
     { BT_SCAN_SIMPLE,            "BT SIMPLE",  1 },
     { BT_SCAN_SIMPLE_TWO,        "BT SIMPLE",  1 },
-    { BT_SCAN_WAR_DRIVE,         "BT WD",      1 },
-    { BT_SCAN_WAR_DRIVE_CONT,    "BT WD+",     1 },
     { BT_SCAN_AIRTAG,            "AIRTAGS",    1 },
     { BT_SCAN_FLIPPER,           "FLIPPERS",   1 },
     { BT_SCAN_SKIMMERS,          "SKIMMERS",   1 },
     { BT_SCAN_RAYBAN,            "RAY-BAN",    1 },
     { BT_SCAN_FLOCK,             "FLOCK",      1 },
-    { BT_SCAN_FLOCK_WARDRIVE,    "FLOCK WD",   1 },
 };
 const RVMode* rvLookup(uint8_t m) {
     for (const RVMode& e : RV_MODES) if (e.mode == m) return &e;
