@@ -119,6 +119,55 @@ namespace RigTheme {
     // subtitle underneath; compact drops the subtitle and the height with it.
     static const int16_t  MODAL_ROW_H = COMPACT ? 22 : 44;
     static const int16_t  MODAL_HEAD  = COMPACT ? 22 : 40;
+
+    // ---------------------------------------------------------------------
+    // Tool run-views — the shared instrument case (see RigView)
+    // ---------------------------------------------------------------------
+    // Every scanner that used to draw the green Marauder console now runs inside
+    // one case: the bronze identity bar (with a live traffic pulse), the GPS/SD
+    // status line, a channel ribbon, a hero tile of headline counters, then the
+    // body — a live feed, a meter, a spectrum or a data sheet depending on the
+    // tool. The bar and status line reuse BAR_H / STATUS_Y / STATUS_H / HEADER_H
+    // above so the case lines up pixel-for-pixel with the home console and the
+    // menu; only the pieces below the status line are new.
+
+    // Channel ribbon: a thin band of channel segments under the status line, on
+    // the tall screen only — the short screen has no room and shows the channel
+    // in the status line instead.
+    static const int16_t  RIBBON_Y    = HEADER_H + 1;             // just under status
+    static const int16_t  RIBBON_H    = 4;
+    static const bool     SHOW_RIBBON = !COMPACT;
+
+    // Hero tile: the same gold-spined panel WardriveCore uses, holding up to
+    // three headline numbers for the tool.
+    static const int16_t  TOOL_HERO_Y = COMPACT ? 31 : 54;
+    static const int16_t  TOOL_HERO_H = COMPACT ? 34 : 48;
+    static const int16_t  TOOL_LBL_DY = COMPACT ?  1 :  4;       // label baseline
+    static const int16_t  TOOL_VAL_DY = COMPACT ?  9 : 11;       // big value baseline
+    static const int16_t  TOOL_SUB_DY = COMPACT ? 25 : 37;       // strip baseline
+    static const uint8_t  TOOL_VAL_SZ = COMPACT ?  2 :  4;       // hero number font
+
+    // Body: whatever the instrument draws. Starts under the hero, ends above the
+    // footer hint.
+    static const int16_t  TOOL_BODY_Y   = COMPACT ? 67 : 108;
+    static const int16_t  TOOL_FOOT_Y   = SCREEN_HEIGHT - (COMPACT ? 12 : 22); // rule
+    static const int16_t  TOOL_HINT_Y   = SCREEN_HEIGHT - (COMPACT ?  9 : 11); // text
+    static const int16_t  TOOL_BODY_END = TOOL_FOOT_Y - 2;
+
+    // Feed rows: newest at the top. A signal-class stripe on the left, the name
+    // and a sub line, four rising bars and the raw RSSI on the right.
+    static const int16_t  FEED_ROW_H  = COMPACT ? 17 : 21;
+    static const int16_t  FEED_PITCH  = COMPACT ? 19 : 23;
+    static const int16_t  FEED_BARS_X = COMPACT ? 150 : 176;     // bars origin
+    static const int16_t  FEED_RSSI_X = SCREEN_WIDTH - 6;        // right-aligned
+
+    // Traffic pulse in the bronze bar: a short activity sparkline that lives
+    // between the title and the battery glyph. One column per sampling slot.
+    static const int16_t  PULSE_X     = COMPACT ? 108 : 124;
+    static const uint8_t  PULSE_N     = COMPACT ? 10 : 14;   // *2 px wide, clears 156
+    static const int16_t  PULSE_COL_W = 2;
+    static const int16_t  PULSE_Y     = COMPACT ? 4 : 5;
+    static const int16_t  PULSE_H     = COMPACT ? 8 : 14;
 }
 
 #endif  // RigTheme_h

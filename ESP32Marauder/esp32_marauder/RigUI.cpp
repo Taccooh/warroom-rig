@@ -6,6 +6,7 @@
 #include "Display.h"
 #include "MenuFunctions.h"
 #include "RigTheme.h"
+#include "RigView.h"
 #include "WiFiScan.h"
 
 #ifdef MARAUDER_CORE_MODE
@@ -559,9 +560,14 @@ void RigUI::main(uint32_t currentTime) {
 
         case Screen::RUNNING: {
             if (running_is_legacy) {
-                // Legacy scans keep the whole old dispatcher: their exit taps,
-                // screen orientation and status bar all live in there.
+                // Legacy scans keep the whole old dispatcher for input: their
+                // exit gesture, live channel retune and screen orientation all
+                // live in there. The dispatcher's own drawing (the green console,
+                // the Marauder status bar) is suppressed for the modes RigView
+                // owns; we paint the instrument case for them here instead.
                 menu_function_obj.main(currentTime);
+                if (RigView::title(wifi_scan_obj.currentScanMode) != nullptr)
+                    rig_view_obj.tick(currentTime);
                 break;
             }
             // Rig Mode's session control (start / stop / re-sync) hangs off the

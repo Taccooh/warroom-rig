@@ -1,6 +1,7 @@
 #include "MenuFunctions.h"
 #include "RigInput.h"       // owns the one keyboard instance the ADV navigates with
 #include "RigUI.h"          // RigUI paints the menus; displayCurrentMenu defers to it
+#include "RigView.h"        // scanners draw into the rig instrument case, not the console
 #include "lang_var.h"
 #include "WardriveCore.h"   // Core-Mode Session-Steuerung (Header intern MARAUDER_CORE_MODE-guarded)
 
@@ -196,6 +197,10 @@ void MenuFunctions::main(uint32_t currentTime)
         else if (wifi_scan_obj.currentScanMode == WIFI_SCAN_WAR_DRIVE_CORE)
           ;   // owned by WardriveCore
         #endif
+        // Scanners that run inside the rig instrument case draw their own bronze
+        // bar (with the live pulse); the Marauder status bar would paint over it.
+        else if (RigView::title(wifi_scan_obj.currentScanMode) != nullptr)
+          ;   // owned by RigView
         else
           this->updateStatusBar();
       }
@@ -226,8 +231,11 @@ void MenuFunctions::main(uint32_t currentTime)
   // This is code from bodmer's keypad example
   uint16_t t_x = 0, t_y = 0; // To store the touch coordinates
 
-  // Get the display buffer out of the way
-  if ((wifi_scan_obj.currentScanMode != WIFI_SCAN_OFF ) &&
+  // Get the display buffer out of the way. Scanners owned by the rig case are
+  // the exception: RigView drains that buffer into its feed itself (drawing the
+  // green Marauder console here would flash under the case every frame).
+  if ((RigView::title(wifi_scan_obj.currentScanMode) == nullptr) &&
+      (wifi_scan_obj.currentScanMode != WIFI_SCAN_OFF ) &&
       (wifi_scan_obj.currentScanMode != WIFI_CONNECTED) &&
       (wifi_scan_obj.currentScanMode != WIFI_ATTACK_BEACON_SPAM) &&
       (wifi_scan_obj.currentScanMode != WIFI_ATTACK_AP_SPAM) &&
