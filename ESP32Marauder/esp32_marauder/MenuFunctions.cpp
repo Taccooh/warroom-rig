@@ -1817,9 +1817,11 @@ void MenuFunctions::RunSetup()
   this->addNodes(&wifiMenu, text_table1[31], TFTYELLOW, SNIFFERS, [this]() {
     this->changeMenu(&wifiSnifferMenu, true);
   });
-  this->addNodes(&wifiMenu, "Scanners", TFTORANGE, SCANNERS, [this]() {
-    this->changeMenu(&wifiScannerMenu, true);
-  });
+  // The IP-service Scanners branch (ping / port / SSH / HTTP / ...) is gone from
+  // the menu: a passive wardriving rig has no use for it. The scan modes and the
+  // wifiScannerMenu object are left in place -- StartScan still knows them and
+  // nothing else has to change -- so this is a menu edit, not surgery on
+  // WiFiScan.
   /*#ifdef HAS_GPS
     this->addNodes(&wifiMenu, "Wardriving", TFTGREEN, BEACON_SNIFF, [this]() {
       this->changeMenu(&wardrivingMenu, true);
@@ -2467,9 +2469,10 @@ void MenuFunctions::RunSetup()
       this->changeMenu(wifiStationMenu.parentMenu, true);
     });
 
-  this->addNodes(&wifiGeneralMenu, "Set MACs", TFTLIGHTGREY, 0, [this]() {
-    this->changeMenu(&setMacMenu, true);
-  });
+  // "Set MACs" (generate / clone AP or STA MAC) is gone from the menu -- MAC
+  // spoofing is an attack affordance a passive rig should not carry. As with the
+  // Scanners branch, the setMacMenu object and RunSetMac stay defined; only the
+  // way in is removed.
 
   this->addNodes(&wifiGeneralMenu, "Shutdown WiFi", TFTRED, 0, [this]() {
     WiFi.disconnect(true);
