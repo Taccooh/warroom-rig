@@ -132,7 +132,6 @@ class MenuFunctions
     String u_result = "";
 
 
-    float _graph_scale = 1.0;
     uint32_t initTime = 0;
     int menu_start_index = 0;
     uint8_t mini_kb_index = 0;
@@ -162,13 +161,11 @@ class MenuFunctions
 
     // WiFi menu stuff
     Menu wifiSnifferMenu;
-    Menu wifiScannerMenu;
     /*#ifdef HAS_GPS
       Menu wardrivingMenu;
     #endif*/
     Menu wifiGeneralMenu;
     Menu wifiAPMenu;
-    Menu wifiIPMenu;
     Menu ssidsMenu;
     //#ifdef HAS_BT
     //  Menu airtagMenu;
@@ -180,9 +177,7 @@ class MenuFunctions
     // WiFi General Menu
     Menu miniKbMenu;
     Menu saveFileMenu;
-    Menu genAPMacMenu;
     Menu cloneAPMacMenu;
-    Menu setMacMenu;
     Menu selectProbeSSIDsMenu;
 
     // Bluetooth menu stuff
@@ -202,20 +197,6 @@ class MenuFunctions
     void buildSDFileMenu(bool update = false);
     void displayMenuButtons();
     uint16_t getColor(uint16_t color);
-    void drawAvgLine(int16_t value);
-    void drawMaxLine(int16_t value, uint16_t color);
-    void drawMaxLine(uint8_t value, uint16_t color);
-    float calculateGraphScale(int16_t value);
-    float calculateGraphScale(uint8_t value);
-    float graphScaleCheck(const int16_t array[TFT_WIDTH]);
-    #ifndef HAS_DUAL_BAND
-      float graphScaleCheckSmall(const uint8_t array[MAX_CHANNEL]);
-    #else
-      float graphScaleCheckSmall(const uint8_t array[DUAL_BAND_CHANNELS]);
-    #endif
-    void drawGraph(int16_t *values);
-    void drawGraphSmall(uint8_t *values);
-    void renderGraphUI(uint8_t scan_mode = 0);
     void addNodes(Menu* menu, const char* name, uint8_t color, int place, std::function<void()> callable, bool selected = false);
     void battery(bool initial = false);
     void battery2(bool initial = false);
@@ -289,7 +270,6 @@ class MenuFunctions
 
     String loaded_file = "";
 
-    void setGraphScale(float scale);
     void updateStatusBar();
     void buildButtons(Menu* menu, int starting_index = 0, const char* button_name = nullptr);
     void changeMenu(Menu* menu, bool simple_change = false);

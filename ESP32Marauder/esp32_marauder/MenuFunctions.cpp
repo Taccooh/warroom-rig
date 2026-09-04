@@ -205,28 +205,9 @@ void MenuFunctions::main(uint32_t currentTime)
           this->updateStatusBar();
       }
       
-      // Do channel analyzer stuff. The rig case draws these as its Series and
-      // Spectrum instruments from the same arrays; the stock graph would paint
-      // over the case every BANNER_TIME.
-      if (RigView::title(wifi_scan_obj.currentScanMode) == nullptr) {
-        if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_CHAN_ANALYZER) ||
-            (wifi_scan_obj.currentScanMode == BT_SCAN_ANALYZER)){
-          #ifdef HAS_SCREEN
-            this->setGraphScale(this->graphScaleCheck(wifi_scan_obj._analyzer_values));
-
-            this->drawGraph(wifi_scan_obj._analyzer_values);
-          #endif
-        }
-
-        if (wifi_scan_obj.currentScanMode == WIFI_SCAN_CHAN_ACT) {
-          #ifdef HAS_SCREEN
-            this->setGraphScale(this->graphScaleCheckSmall(wifi_scan_obj.channel_activity));
-
-            this->drawGraphSmall(wifi_scan_obj.channel_activity);
-
-          #endif
-        }
-      }
+      // The channel and BT analyzers are drawn by the rig case (RigView's
+      // Series and Spectrum instruments) from the same arrays; the Marauder
+      // graph that used to be redrawn here every BANNER_TIME is gone.
     }
   }
 
@@ -1620,7 +1601,6 @@ void MenuFunctions::RunSetup()
   extern LinkedList<AccessPoint>* access_points;
   extern LinkedList<Station>* stations;
   extern LinkedList<AirTag>* airtags;
-  extern LinkedList<IPAddress>* ipList;
   extern LinkedList<ProbeReqSsid>* probe_req_ssids;
   extern LinkedList<ssid>* ssids;
   extern LinkedList<BleDevice>* ble_devices;
@@ -1655,16 +1635,12 @@ void MenuFunctions::RunSetup()
   infoMenu.list = new LinkedList<MenuNode>();
   // WiFi menu stuff
   wifiSnifferMenu.list = new LinkedList<MenuNode>();
-  wifiScannerMenu.list = new LinkedList<MenuNode>();
   /*#ifdef HAS_GPS
     wardrivingMenu.list = new LinkedList<MenuNode>();
   #endif*/
   wifiGeneralMenu.list = new LinkedList<MenuNode>();
   wifiAPMenu.list = new LinkedList<MenuNode>();
-  wifiIPMenu.list = new LinkedList<MenuNode>();
   apInfoMenu.list = new LinkedList<MenuNode>();
-  setMacMenu.list = new LinkedList<MenuNode>();
-  genAPMacMenu.list = new LinkedList<MenuNode>();
   wifiStationMenu.list = new LinkedList<MenuNode>();
   selectProbeSSIDsMenu.list = new LinkedList<MenuNode>();
 
@@ -1709,7 +1685,6 @@ void MenuFunctions::RunSetup()
   settingsMenu.name = text_table1[18];
   bluetoothMenu.name = text_table1[19];
   wifiSnifferMenu.name = text_table1[20];
-  wifiScannerMenu.name = "Scanners";
   wifiGeneralMenu.name = text_table1[22];
   saveFileMenu.name = "Save/Load Files";
   saveSSIDsMenu.name = "Save SSIDs";
@@ -1724,10 +1699,7 @@ void MenuFunctions::RunSetup()
   clearSSIDsMenu.name = text_table1[28];
   clearAPsMenu.name = text_table1[29];
   wifiAPMenu.name = "Select";
-  wifiIPMenu.name = "Active IPs";
   apInfoMenu.name = "AP Info";
-  setMacMenu.name = "Set MACs";
-  genAPMacMenu.name = "Generate AP MAC";
   wifiStationMenu.name = "Select Stations";
   #ifdef HAS_GPS
     gpsMenu.name = "GPS"; 
@@ -1821,11 +1793,10 @@ void MenuFunctions::RunSetup()
   this->addNodes(&wifiMenu, text_table1[31], TFTYELLOW, SNIFFERS, [this]() {
     this->changeMenu(&wifiSnifferMenu, true);
   });
-  // The IP-service Scanners branch (ping / port / SSH / HTTP / ...) is gone from
-  // the menu: a passive wardriving rig has no use for it. The scan modes and the
-  // wifiScannerMenu object are left in place -- StartScan still knows them and
-  // nothing else has to change -- so this is a menu edit, not surgery on
-  // WiFiScan.
+  // The IP-service Scanners branch (ping / port / SSH / HTTP / ...) is gone: a
+  // passive wardriving rig has no use for it. Its menu, the Active-IPs picker
+  // and their objects were removed with it; only the scan-mode ids remain in
+  // WiFiScan.h, where StartScan still recognises them and does nothing.
   /*#ifdef HAS_GPS
     this->addNodes(&wifiMenu, "Wardriving", TFTGREEN, BEACON_SNIFF, [this]() {
       this->changeMenu(&wardrivingMenu, true);
@@ -1833,79 +1804,6 @@ void MenuFunctions::RunSetup()
   #endif*/
   this->addNodes(&wifiMenu, text_table1[33], TFTPURPLE, GENERAL_APPS, [this]() {
     this->changeMenu(&wifiGeneralMenu, true);
-  });
-
-  // Build WiFi scanner Menu
-  wifiScannerMenu.parentMenu = &wifiMenu; // Main Menu is second menu parent
-  this->addNodes(&wifiScannerMenu, text09, TFTLIGHTGREY, 0, [this]() {
-    this->changeMenu(wifiScannerMenu.parentMenu, true);
-  });
-  this->addNodes(&wifiScannerMenu, "Ping Scan", TFTGREEN, SCANNERS, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_PING_SCAN, TFT_CYAN);
-  });
-  #ifndef HAS_DUAL_BAND
-    this->addNodes(&wifiScannerMenu, "ARP Scan", TFTCYAN, SCANNERS, [this]() {
-      display_obj.clearScreen();
-      this->drawStatusBar();
-      wifi_scan_obj.StartScan(WIFI_ARP_SCAN, TFT_CYAN);
-    });
-  #endif
-  this->addNodes(&wifiScannerMenu, "Port Scan All", TFTMAGENTA, BEACON_LIST, [this](){
-    // Add the back button
-    wifiIPMenu.list->clear();
-      this->addNodes(&wifiIPMenu, text09, TFTLIGHTGREY, 0, [this]() {
-      this->changeMenu(wifiIPMenu.parentMenu, true);
-    });
-
-    // Populate the menu with buttons
-    for (int i = 0; i < ipList->size(); i++) {
-      // This is the menu node
-      this->addNodes(&wifiIPMenu, ipList->get(i).toString().c_str(), TFTBLUE, 255, [this, i](){
-        Serial.println("Selected: " + ipList->get(i).toString());
-        wifi_scan_obj.current_scan_ip = ipList->get(i);
-        display_obj.clearScreen();
-        this->drawStatusBar();
-        wifi_scan_obj.StartScan(WIFI_PORT_SCAN_ALL, TFT_BLUE);
-      });
-    }
-    this->changeMenu(&wifiIPMenu, true);
-  });
-  this->addNodes(&wifiScannerMenu, "SSH Scan", TFTORANGE, SCANNERS, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_SCAN_SSH, TFT_CYAN);
-  });
-  this->addNodes(&wifiScannerMenu, "Telnet Scan", TFTRED, SCANNERS, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_SCAN_TELNET, TFT_CYAN);
-  });
-  this->addNodes(&wifiScannerMenu, "SMTP Scan", TFTWHITE, SCANNERS, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_SCAN_SMTP, TFT_CYAN);
-  });
-  this->addNodes(&wifiScannerMenu, "DNS Scan", TFTLIME, SCANNERS, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_SCAN_DNS, TFT_CYAN);
-  });
-  this->addNodes(&wifiScannerMenu, "HTTP Scan", TFTSKYBLUE, SCANNERS, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_SCAN_HTTP, TFT_CYAN);
-  });
-  this->addNodes(&wifiScannerMenu, "HTTPS Scan", TFTYELLOW, SCANNERS, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_SCAN_HTTPS, TFT_CYAN);
-  });
-  this->addNodes(&wifiScannerMenu, "RDP Scan", TFTPURPLE, SCANNERS, [this]() {
-    display_obj.clearScreen();
-    this->drawStatusBar();
-    wifi_scan_obj.StartScan(WIFI_SCAN_RDP, TFT_CYAN);
   });
 
   // Build WiFi sniffer Menu
@@ -1957,14 +1855,10 @@ void MenuFunctions::RunSetup()
   #endif
   this->addNodes(&wifiSnifferMenu, "Channel Analyzer", TFTCYAN, PACKET_MONITOR, [this]() {
     display_obj.clearScreen();
-    this->drawStatusBar();
-    this->renderGraphUI(WIFI_SCAN_CHAN_ANALYZER);
     wifi_scan_obj.StartScan(WIFI_SCAN_CHAN_ANALYZER, TFT_CYAN);
   });
   this->addNodes(&wifiSnifferMenu, "Channel Summary", TFTORANGE, PACKET_MONITOR, [this]() {
     display_obj.clearScreen();
-    this->drawStatusBar();
-    this->renderGraphUI(WIFI_SCAN_CHAN_ACT);
     wifi_scan_obj.StartScan(WIFI_SCAN_CHAN_ACT, TFT_CYAN);
   });
 
@@ -2256,11 +2150,6 @@ void MenuFunctions::RunSetup()
       this->changeMenu(wifiAPMenu.parentMenu, true);
     });
 
-    wifiIPMenu.parentMenu = &wifiScannerMenu;
-    this->addNodes(&wifiIPMenu, text09, TFTLIGHTGREY, 0, [this]() {
-      this->changeMenu(wifiIPMenu.parentMenu, true);
-    });
-
 
     // Select Stations on Mini v2
     this->addNodes(&wifiGeneralMenu, "Select Stations", TFTCYAN, KEYBOARD_ICO, [this](){
@@ -2473,10 +2362,9 @@ void MenuFunctions::RunSetup()
       this->changeMenu(wifiStationMenu.parentMenu, true);
     });
 
-  // "Set MACs" (generate / clone AP or STA MAC) is gone from the menu -- MAC
-  // spoofing is an attack affordance a passive rig should not carry. As with the
-  // Scanners branch, the setMacMenu object and RunSetMac stay defined; only the
-  // way in is removed.
+  // "Set MACs" (generate / clone AP or STA MAC) is gone -- MAC spoofing is an
+  // attack affordance a passive rig should not carry. Its menu and objects were
+  // removed; RunSetMac / RunGenerateRandomMac remain in WiFiScan, unreferenced.
 
   this->addNodes(&wifiGeneralMenu, "Shutdown WiFi", TFTRED, 0, [this]() {
     WiFi.disconnect(true);
@@ -2485,73 +2373,6 @@ void MenuFunctions::RunSetup()
     this->changeMenu(current_menu, true);
   });
 
-
-  // Menu for generating and setting MAC addrs for AP and STA
-  setMacMenu.parentMenu = &wifiGeneralMenu;
-  this->addNodes(&setMacMenu, text09, TFTLIGHTGREY, 0, [this]() {
-    this->changeMenu(setMacMenu.parentMenu, true);
-  });
-
-  // Generate random MAC for AP
-  this->addNodes(&setMacMenu, "Generate AP MAC", TFTLIME, 0, [this]() {
-    this->changeMenu(&genAPMacMenu, true);
-    wifi_scan_obj.RunGenerateRandomMac(true);
-  });
-
-  // Generate random MAC for AP
-  this->addNodes(&setMacMenu, "Generate STA MAC", TFTCYAN, 0, [this]() {
-    this->changeMenu(&genAPMacMenu, true);
-    wifi_scan_obj.RunGenerateRandomMac(false);
-  });
-
-  // Clone AP MAC to ESP32 for button folks
-  //#ifndef HAS_ILI9341
-    this->addNodes(&setMacMenu, "Clone AP MAC", TFTRED, CLEAR_ICO, [this](){
-      wifiAPMenu.parentMenu = &wifiGeneralMenu;
-
-      // Add the back button
-      wifiAPMenu.list->clear();
-        this->addNodes(&wifiAPMenu, text09, TFTLIGHTGREY, 0, [this]() {
-        this->changeMenu(wifiAPMenu.parentMenu, true);
-      });
-
-      // Populate the menu with buttons
-      for (int i = 0; i < access_points->size(); i++) {
-        // This is the menu node
-        this->addNodes(&wifiAPMenu, access_points->get(i).essid.c_str(), TFTLIME, 255, [this, i](){
-          this->changeMenu(&genAPMacMenu, true);
-          wifi_scan_obj.RunSetMac(access_points->get(i).bssid, true);
-        });
-      }
-      this->changeMenu(&wifiAPMenu, true);
-    });
-
-    this->addNodes(&setMacMenu, "Clone STA MAC", TFTMAGENTA, CLEAR_ICO, [this](){
-      wifiAPMenu.parentMenu = &wifiGeneralMenu;
-
-      // Add the back button
-      wifiAPMenu.list->clear();
-        this->addNodes(&wifiAPMenu, text09, TFTLIGHTGREY, 0, [this]() {
-        this->changeMenu(wifiAPMenu.parentMenu, true);
-      });
-
-      // Populate the menu with buttons
-      for (int i = 0; i < stations->size(); i++) {
-        // This is the menu node
-        this->addNodes(&wifiAPMenu, macToString(stations->get(i).mac).c_str(), TFTMAGENTA, 255, [this, i](){
-          this->changeMenu(&genAPMacMenu, true);
-          wifi_scan_obj.RunSetMac(stations->get(i).mac, false);
-        });
-      }
-      this->changeMenu(&wifiAPMenu, true);
-    });
-  //#endif
-
-  // Menu for generating and setting access point MAC (just goes bacK)
-  genAPMacMenu.parentMenu = &wifiGeneralMenu;
-  this->addNodes(&genAPMacMenu, text09, TFTLIGHTGREY, 0, [this]() {
-    this->changeMenu(genAPMacMenu.parentMenu, true);
-  });
 
   // Build generate ssids menu
   generateSSIDsMenu.parentMenu = &wifiGeneralMenu;
@@ -2612,7 +2433,6 @@ void MenuFunctions::RunSetup()
   this->addNodes(&bluetoothSnifferMenu, "Bluetooth Analyzer", TFTCYAN, PACKET_MONITOR, [this]() {
     display_obj.clearScreen();
     this->drawStatusBar();
-    this->renderGraphUI(BT_SCAN_ANALYZER);
     wifi_scan_obj.StartScan(BT_SCAN_ANALYZER, TFT_CYAN);
   });
   this->addNodes(&bluetoothSnifferMenu, "Flock Sniff", TFTORANGE, FLOCK, [this]() {
@@ -3430,211 +3250,10 @@ void MenuFunctions::addNodes(Menu * menu, const char* name, uint8_t color, int p
   menu->list->add(MenuNode{String(name), false, color, place, selected, callable});
 }
 
-void MenuFunctions::setGraphScale(float scale) {
-  this->_graph_scale = scale;
-}
-
-float MenuFunctions::calculateGraphScale(uint8_t value) {
-  if ((value * this->_graph_scale < GRAPH_VERT_LIM) && (value * this->_graph_scale > GRAPH_VERT_LIM * 0.75)) {
-    return this->_graph_scale;  // No scaling needed if the value is within the limit
-  }
-
-  if (value < GRAPH_VERT_LIM)
-    return 1.0;
-
-  // Calculate the multiplier proportionally
-  return (0.75 * GRAPH_VERT_LIM) / value;
-}
-
-float MenuFunctions::calculateGraphScale(int16_t value) {
-  if ((value * this->_graph_scale < GRAPH_VERT_LIM) && (value * this->_graph_scale > GRAPH_VERT_LIM * 0.75)) {
-    return this->_graph_scale;  // No scaling needed if the value is within the limit
-  }
-
-  if (value < GRAPH_VERT_LIM)
-    return 1.0;
-
-  // Calculate the multiplier proportionally
-  return (0.75 * GRAPH_VERT_LIM) / value;
-}
-
-float MenuFunctions::graphScaleCheck(const int16_t array[SCREEN_WIDTH]) {
-  int16_t maxValue = 0;
-
-  // Iterate through the array to find the highest value
-  for (int16_t i = 0; i < SCREEN_WIDTH; i++) {
-    if (array[i] > maxValue) {
-      maxValue = array[i];
-    }
-  }
-
-  // If the highest value exceeds GRAPH_VERT_LIM, call calculateMultiplier
-  if (maxValue > GRAPH_VERT_LIM) {
-    return this->calculateGraphScale(maxValue);
-  }
-
-  // If the highest value does not exceed GRAPH_VERT_LIM, return 1.0
-  return 1.0;
-}
-
-float MenuFunctions::graphScaleCheckSmall(const uint8_t array[CHAN_PER_PAGE]) {
-  uint8_t maxValue = 0;
-
-  // Iterate through the array to find the highest value
-  for (uint8_t i = 0; i < CHAN_PER_PAGE; i++) {
-    if (array[i] > maxValue) {
-      maxValue = array[i];
-    }
-  }
-
-  // If the highest value exceeds GRAPH_VERT_LIM, call calculateMultiplier
-  if (maxValue > GRAPH_VERT_LIM) {
-    return this->calculateGraphScale(maxValue);
-  }
-
-  // If the highest value does not exceed GRAPH_VERT_LIM, return 1.0
-  return 1.0;
-}
-
-// The graph is baselined at the bottom of the screen and spans its full width,
-// which is SCREEN_HEIGHT and SCREEN_WIDTH. TFT_HEIGHT/TFT_WIDTH describe the
-// panel in portrait, so on the landscape ADV they had these lines starting at
-// y=240 on a 135 px screen -- every Max and Average line was drawn off the
-// bottom while renderGraphUI(), which is SCREEN_*-based, printed a legend for
-// them. The bars themselves were already drawn against the right numbers.
-void MenuFunctions::drawMaxLine(int16_t value, uint16_t color) {
-  display_obj.tft.drawLine(0, SCREEN_HEIGHT - (value * this->_graph_scale), SCREEN_WIDTH, SCREEN_HEIGHT - (value * this->_graph_scale), color);
-  display_obj.tft.setCursor(0, SCREEN_HEIGHT - (value * this->_graph_scale));
-  display_obj.tft.setTextColor(color, TFT_BLACK);
-  display_obj.tft.setTextSize(1);
-  display_obj.tft.println((String)(value / BASE_MULTIPLIER));
-}
-
-void MenuFunctions::drawMaxLine(uint8_t value, uint16_t color) {
-  //display_obj.tft.drawLine(0, SCREEN_HEIGHT - (value * this->_graph_scale), SCREEN_WIDTH, SCREEN_HEIGHT - (value * this->_graph_scale), color);
-  display_obj.tft.setCursor(0, SCREEN_HEIGHT - (value * this->_graph_scale));
-  display_obj.tft.setTextColor(color, TFT_BLACK);
-  display_obj.tft.setTextSize(1);
-  display_obj.tft.println((String)value);
-}
-
-void MenuFunctions::drawGraphSmall(uint8_t *values) {
-  uint8_t maxValue = 0;
-  //(i + (CHAN_PER_PAGE * (this->activity_page - 1)))
-
-  int bar_width = SCREEN_WIDTH / (CHAN_PER_PAGE * 2);
-  //display_obj.tft.fillRect(0, TFT_HEIGHT / 2 + 1, SCREEN_WIDTH, (TFT_HEIGHT / 2) + 1, TFT_BLACK);
-
-  #ifndef HAS_DUAL_BAND
-    for (int i = 1; i < CHAN_PER_PAGE + 1; i++) {
-      int targ_val = i + (CHAN_PER_PAGE * (wifi_scan_obj.activity_page - 1)) - 1;
-      int x_mult = (i * 2) - 1;
-      int x_coord = (SCREEN_WIDTH / (CHAN_PER_PAGE * 2)) * (x_mult - 1);
-
-      if (values[targ_val] > maxValue) {
-        maxValue = values[targ_val];
-      }
-
-      if (values[targ_val] * this->_graph_scale <= GRAPH_VERT_LIM) {
-        display_obj.tft.fillRect(x_coord, SCREEN_HEIGHT / 2 + 1, bar_width, SCREEN_HEIGHT / 2 + 1, TFT_BLACK);
-        display_obj.tft.fillRect(x_coord, SCREEN_HEIGHT - (values[targ_val] * this->_graph_scale), bar_width, values[targ_val] * this->_graph_scale, TFT_CYAN);
-      }
-
-      display_obj.tft.drawLine(x_coord - 2, SCREEN_HEIGHT - GRAPH_VERT_LIM - (CHAR_WIDTH * 2), x_coord - 2, SCREEN_HEIGHT, TFT_WHITE);
-    }
-  #else
-    for (int i = 1; i < CHAN_PER_PAGE + 1; i++) {
-      int targ_val = i + (CHAN_PER_PAGE * (wifi_scan_obj.activity_page - 1)) - 1;
-      int x_mult = (i * 2) - 1;
-      int x_coord = (SCREEN_WIDTH / (CHAN_PER_PAGE * 2)) * (x_mult - 1);
-
-      if (values[targ_val] > maxValue) {
-        maxValue = values[targ_val];
-      }
-
-      if (values[targ_val] * this->_graph_scale <= GRAPH_VERT_LIM) {
-        display_obj.tft.fillRect(x_coord, SCREEN_HEIGHT / 2 + 1, bar_width + 3, SCREEN_HEIGHT / 2 + 1, TFT_BLACK);
-        display_obj.tft.fillRect(x_coord, SCREEN_HEIGHT - (values[targ_val] * this->_graph_scale), bar_width, values[targ_val] * this->_graph_scale, TFT_CYAN);
-      }
-
-      display_obj.tft.drawLine(x_coord - 2, SCREEN_HEIGHT - GRAPH_VERT_LIM - (CHAR_WIDTH * 2), x_coord - 2, SCREEN_HEIGHT, TFT_WHITE);
-    }
-  #endif
-
-  this->drawMaxLine(maxValue, TFT_GREEN); // Draw max
-}
-
-void MenuFunctions::drawGraph(int16_t *values) {
-  #if !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
-    int width = TFT_WIDTH;
-  #else
-    int width = SCREEN_WIDTH;
-  #endif
-
-  int16_t maxValue = 0;
-  int total = 0;
-  for (int i = width - 1; i >= 0; i--) {
-    if (values[i] >= 0) {
-      total = total + values[i];
-      if (values[i] > maxValue) {
-        maxValue = values[i];
-      }
-      #if !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
-        display_obj.tft.drawLine(i, TFT_HEIGHT, i, TFT_HEIGHT - GRAPH_VERT_LIM, TFT_BLACK);
-        display_obj.tft.drawLine(i, TFT_HEIGHT, i, TFT_HEIGHT - (values[i] * this->_graph_scale), TFT_CYAN);
-      #else
-        // Spelled SCREEN_HEIGHT rather than TFT_WIDTH. Same number on this
-        // board -- SCREEN_HEIGHT *is* TFT_WIDTH here -- but one of the two names
-        // says "the bottom of the screen" and the other says "the narrow side
-        // of the panel", and reading the wrong one is what put the Max and
-        // Average lines below the display.
-        display_obj.tft.drawLine(i, SCREEN_HEIGHT, i, SCREEN_HEIGHT - GRAPH_VERT_LIM, TFT_BLACK);
-        display_obj.tft.drawLine(i, SCREEN_HEIGHT, i, SCREEN_HEIGHT - (values[i] * this->_graph_scale), TFT_CYAN);
-        display_obj.tft.setCursor(0, 0);
-        display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      #endif
-    }
-    else {
-      int16_t ch_val = values[i] * -1;
-      #if !defined(MARAUDER_CARDPUTER) && !defined(MARAUDER_CARDPUTER_ADV)
-        display_obj.tft.drawLine(i, TFT_HEIGHT, i, TFT_HEIGHT - GRAPH_VERT_LIM, TFT_BLACK);
-        display_obj.tft.drawLine(i, TFT_HEIGHT, i, TFT_HEIGHT - GRAPH_VERT_LIM, TFT_RED);
-        display_obj.tft.setCursor(i, TFT_HEIGHT - GRAPH_VERT_LIM);
-      #else
-        display_obj.tft.drawLine(i, SCREEN_HEIGHT, i, SCREEN_HEIGHT - GRAPH_VERT_LIM, TFT_BLACK);
-        display_obj.tft.drawLine(i, SCREEN_HEIGHT, i, SCREEN_HEIGHT - GRAPH_VERT_LIM, TFT_RED);
-        display_obj.tft.setCursor(i, SCREEN_HEIGHT - GRAPH_VERT_LIM);
-      #endif
-      display_obj.tft.setTextColor(TFT_BLACK, TFT_RED);
-      display_obj.tft.setTextSize(1);
-      display_obj.tft.println((String)ch_val);
-    }
-  }
-
-  this->drawMaxLine(maxValue, TFT_GREEN); // Draw max
-  // Divide by the same count the loop above summed. TFT_WIDTH is 135 on the
-  // ADV while the loop walks SCREEN_WIDTH = 240 samples, which reported the
-  // average as roughly 1.78x what it was.
-  this->drawMaxLine((int16_t)(total / width), TFT_ORANGE); // Draw average
-}
-
-void MenuFunctions::renderGraphUI(uint8_t scan_mode) {
-  display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  if (scan_mode == WIFI_SCAN_CHAN_ANALYZER)
-    display_obj.tft.drawCentreString("Frames/" + (String)BANNER_TIME + "ms", SCREEN_WIDTH / 2, SCREEN_HEIGHT - GRAPH_VERT_LIM - (CHAR_WIDTH * 2), 1);
-  else if (scan_mode == BT_SCAN_ANALYZER)
-    display_obj.tft.drawCentreString("BLE Beacons/" + (String)BANNER_TIME + "ms", SCREEN_WIDTH / 2, SCREEN_HEIGHT - GRAPH_VERT_LIM - (CHAR_WIDTH * 2), 1);
-  display_obj.tft.drawLine(0, SCREEN_HEIGHT - GRAPH_VERT_LIM - 1, SCREEN_WIDTH, SCREEN_HEIGHT - GRAPH_VERT_LIM - 1, TFT_WHITE);
-  display_obj.tft.setCursor(0, SCREEN_HEIGHT - GRAPH_VERT_LIM - (CHAR_WIDTH * 8));
-  display_obj.tft.setTextSize(1);
-  display_obj.tft.setTextColor(TFT_GREEN, TFT_BLACK);
-  display_obj.tft.println("Max");
-  display_obj.tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-  display_obj.tft.println("Average");
-  display_obj.tft.setTextColor(TFT_RED, TFT_BLACK);
-  if (scan_mode != BT_SCAN_ANALYZER)
-    display_obj.tft.println("Channel Marker");
-}
+// The Marauder graph renderers lived here: drawGraph, drawGraphSmall,
+// drawMaxLine, the scale helpers and the renderGraphUI legend. The channel and
+// BT analyzers are drawn by RigView (its Series and Spectrum instruments) from
+// the same arrays now, and nothing else reached them.
 
 uint16_t MenuFunctions::getColor(uint16_t color) {
   if (color == TFTWHITE) return TFT_WHITE;
