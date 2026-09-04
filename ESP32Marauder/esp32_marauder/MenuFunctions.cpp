@@ -205,23 +205,27 @@ void MenuFunctions::main(uint32_t currentTime)
           this->updateStatusBar();
       }
       
-      // Do channel analyzer stuff
-      if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_CHAN_ANALYZER) ||
-          (wifi_scan_obj.currentScanMode == BT_SCAN_ANALYZER)){
-        #ifdef HAS_SCREEN
-          this->setGraphScale(this->graphScaleCheck(wifi_scan_obj._analyzer_values));
+      // Do channel analyzer stuff. The rig case draws these as its Series and
+      // Spectrum instruments from the same arrays; the stock graph would paint
+      // over the case every BANNER_TIME.
+      if (RigView::title(wifi_scan_obj.currentScanMode) == nullptr) {
+        if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_CHAN_ANALYZER) ||
+            (wifi_scan_obj.currentScanMode == BT_SCAN_ANALYZER)){
+          #ifdef HAS_SCREEN
+            this->setGraphScale(this->graphScaleCheck(wifi_scan_obj._analyzer_values));
 
-          this->drawGraph(wifi_scan_obj._analyzer_values);
-        #endif
-      }
+            this->drawGraph(wifi_scan_obj._analyzer_values);
+          #endif
+        }
 
-      if (wifi_scan_obj.currentScanMode == WIFI_SCAN_CHAN_ACT) {
-        #ifdef HAS_SCREEN
-          this->setGraphScale(this->graphScaleCheckSmall(wifi_scan_obj.channel_activity));
+        if (wifi_scan_obj.currentScanMode == WIFI_SCAN_CHAN_ACT) {
+          #ifdef HAS_SCREEN
+            this->setGraphScale(this->graphScaleCheckSmall(wifi_scan_obj.channel_activity));
 
-          this->drawGraphSmall(wifi_scan_obj.channel_activity);
+            this->drawGraphSmall(wifi_scan_obj.channel_activity);
 
-        #endif
+          #endif
+        }
       }
     }
   }
@@ -4053,84 +4057,12 @@ void MenuFunctions::displayCurrentMenu(int start_index)
 // ============================================================
 #ifndef HAS_MINI_SCREEN
   void MenuFunctions::brightnessMode() {
-    extern void brightnessSave(uint8_t level);
-    extern uint8_t getBrightnessLevel();
-
-    const uint8_t levels[] = {26, 51, 77, 102, 128, 153, 179, 204, 230, 255};
-    const uint8_t numLevels = 10;
-    uint8_t level = getBrightnessLevel();
-
-    // LEDC write compatibility (2.x vs 3.x board package)
-    #if ESP_ARDUINO_VERSION_MAJOR >= 3
-      #define BL_PREVIEW(duty) ledcWrite(TFT_BL, (duty))
-    #else
-      #define BL_PREVIEW(duty) ledcWrite(0, (duty))
-    #endif
-
-    display_obj.tft.fillScreen(TFT_BLACK);
-    display_obj.tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    display_obj.tft.drawCentreString("BRIGHTNESS", TFT_WIDTH/2, 30, 2);
-
-    display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    display_obj.tft.drawCentreString("TAP TOP = BRIGHTER", TFT_WIDTH/2, 10, 1);
-    display_obj.tft.drawCentreString("TAP BOTTOM = DIMMER", TFT_WIDTH/2, TFT_HEIGHT - 20, 1);
-    display_obj.tft.setTextColor(TFT_RED, TFT_BLACK);
-    display_obj.tft.drawCentreString("TAP MIDDLE or WAIT 3s = SAVE", TFT_WIDTH/2, TFT_HEIGHT/2 + 50, 1);
-
-    auto drawBar = [&]() {
-      uint16_t barX = 30, barY = TFT_HEIGHT/2 - 25, barW = TFT_WIDTH - 60, barH = 30;
-      display_obj.tft.drawRect(barX, barY, barW, barH, TFT_WHITE);
-      uint16_t fillW = (barW - 4) * (level + 1) / numLevels;
-      display_obj.tft.fillRect(barX + 2, barY + 2, barW - 4, barH - 4, TFT_BLACK);
-      display_obj.tft.fillRect(barX + 2, barY + 2, fillW, barH - 4, TFT_CYAN);
-      display_obj.tft.fillRect(0, barY + barH + 5, TFT_WIDTH, 20, TFT_BLACK);
-      display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      String pct = String(levels[level] * 100 / 255) + "%";
-      display_obj.tft.drawCentreString(pct, TFT_WIDTH/2, barY + barH + 8, 2);
-    };
-    drawBar();
-
-    uint16_t zoneUp = TFT_HEIGHT * 25 / 100;
-    uint16_t zoneDown = TFT_HEIGHT * 75 / 100;
-    uint32_t lastTouch = millis();
-
-    while (true) {
-      // Auto-save after 3s of no touch
-      if (millis() - lastTouch >= 3000) {
-        brightnessSave(level);
-        break;
-      }
-
-      uint16_t tx, ty;
-      if (display_obj.updateTouch(&tx, &ty)) {
-        lastTouch = millis();
-        // Wait for release
-        while (display_obj.updateTouch(&tx, &ty)) delay(10);
-
-        if (ty < zoneUp) {
-          if (level < numLevels - 1) {
-            level++;
-            BL_PREVIEW(levels[level]);
-            drawBar();
-          }
-        } else if (ty >= zoneDown) {
-          if (level > 0) {
-            level--;
-            BL_PREVIEW(levels[level]);
-            drawBar();
-          }
-        } else {
-          // Middle = save now
-          brightnessSave(level);
-          break;
-        }
-        delay(150);
-      }
-      delay(30);
-    }
-
-    #undef BL_PREVIEW
-    this->changeMenu(current_menu, true);
+    // The control itself lives in the rig case (RigView::brightnessModal): it
+    // reads UP/DOWN and SELECT as well as the touch zones, so a button board
+    // can actually adjust it. The old screen here was touch-only and, on a
+    // board without a panel, simply timed out after three seconds.
+    rig_view_obj.brightnessModal();
+    this->changeMenu(current_menu, true);   // repaint the list underneath
   }
 #endif
 

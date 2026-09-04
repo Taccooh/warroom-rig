@@ -36,16 +36,32 @@
 
 class RigView {
 public:
+    // Which instrument a mode gets inside the case. The case (bar, status line,
+    // ribbon, hero, footer) is the same for all of them; only the body differs.
+    enum Kind : uint8_t {
+        FEED,       // sightings narrated to the console buffer, newest on top
+        RANK,       // a ranked list read straight from WiFiScan's structures
+        SPECTRUM,   // one bar per channel (Channel Summary)
+        SERIES,     // a scrolling time series (Channel / BT Analyzer)
+        METER,      // one signal, big: Fox Hunt
+    };
+
     // Is this scan mode one RigView draws? Used by RigUI to route it here and by
-    // MenuFunctions to suppress the Marauder console/status-bar for it. Returns
-    // the display title, or nullptr for a mode RigView does not own (attacks,
-    // analyzers, the GPS screens, Rig Mode's own full-screen view).
+    // MenuFunctions / WiFiScan to suppress their own drawing for it. Returns the
+    // display title, or nullptr for a mode RigView does not own (attacks, the
+    // packet-monitor oscilloscope, the GPS screens, Rig Mode's own view).
     static const char* title(uint8_t scan_mode);
 
     // Called every loop() while an owned scan is running. Lazily (re)initialises
-    // when the running mode changes, drains the console buffer into the feed, and
-    // repaints on its own cadence.
+    // when the running mode changes, gathers the instrument's data, and repaints
+    // on its own cadence.
     void tick(uint32_t now);
+
+    // Rig-styled brightness control: a blocking modal driven by UP/DOWN (or the
+    // touch zones on touch boards), saved on SELECT or after a pause. Replaces
+    // the stock touch-only screen, which on a button board could not be adjusted
+    // at all and simply timed out.
+    void brightnessModal();
 
 private:
     // A signal class, from the strongest bar colour down. Also carries "alert",
@@ -84,22 +100,50 @@ private:
 
     uint8_t  mode_        = 0;        // WIFI_SCAN_OFF -> "not initialised"
     uint8_t  band_        = 0;        // 0 = 2.4 GHz Wi-Fi, 1 = BLE
+    uint8_t  kind_        = FEED;     // Kind
     const char* title_    = nullptr;
 
     uint32_t last_frame_ms_ = 0;      // status line / ribbon / battery cadence
-    uint32_t last_feed_ms_  = 0;      // feed + hero + pulse cadence
+    uint32_t last_feed_ms_  = 0;      // body + hero + pulse cadence
     uint8_t  drawn_ch_      = 0xFF;   // ribbon: last channel drawn
+
+    // ---- SPECTRUM: one bar per channel, with a peak cap that decays --------
+    static const uint8_t SPEC_MAX = 14;   // channels shown per page
+    uint8_t  spec_peak_[SPEC_MAX] = {};   // peak-hold value per bar
+    uint32_t spec_peak_ms_ = 0;           // last decay step
+
+    // ---- SERIES: the analyzer's scrolling history, plus its max/avg ---------
+    int16_t  series_max_ = 0;
+    int16_t  series_avg_ = 0;
+
+    // ---- METER: the tracked signal and a short history of it ---------------
+    static const uint8_t METER_HIST = 56;
+    int8_t   meter_hist_[METER_HIST] = {};
+    uint8_t  meter_hist_n_ = 0;
+    int8_t   meter_rssi_   = 0;
+    int8_t   meter_peak_   = 0;
+    uint32_t meter_step_ms_ = 0;
+    char     meter_name_[24] = "";
+
+    // ---- RANK: rows are re-read from WiFiScan each paint --------------------
+    uint32_t rank_sig_ = 0;               // hash of what was drawn last
 
     void begin(uint8_t scan_mode);
     void drainBuffer();
     void pushLine(const String& raw);
+    void gather(uint32_t now);        // per-kind data refresh before a paint
 
     void drawFrame();                 // full: clear + static chrome
     void drawBar(bool full);          // bronze bar: title (full) + pulse + battery
     void drawStatus();                // GPS / SD line
     void drawRibbon();                // channel band
-    void drawHero();                  // headline counters
-    void drawFeed();                  // the sightings
+    void drawHero();                  // headline counters (per kind)
+    void drawBody();                  // dispatches on kind_
+    void drawFeed();                  // FEED
+    void drawRank();                  // RANK
+    void drawSpectrum();              // SPECTRUM
+    void drawSeries();                // SERIES
+    void drawMeter();                 // METER
 };
 
 extern RigView rig_view_obj;

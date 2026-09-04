@@ -47,6 +47,18 @@ LinkedList<IPAddress>* ipList;
 LinkedList<ProbeReqSsid>* probe_req_ssids;
 LinkedList<BleDevice>* ble_devices;
 
+// While the rig instrument case (RigView) owns the screen for the running mode,
+// the stock per-mode drawing in this file must stay off it: the case reads the
+// same data these functions would print and paints it in the rig's language.
+// Data-side work (channel parking, serial output) keeps running regardless.
+extern WiFiScan wifi_scan_obj;
+#ifdef HAS_SCREEN
+  #include "RigView.h"
+  static inline bool rigOwnsScreen() { return RigView::title(wifi_scan_obj.currentScanMode) != nullptr; }
+#else
+  static inline bool rigOwnsScreen() { return false; }
+#endif
+
 extern "C" int ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32_t arg3){
     if (arg == 31337)
       return 1;
@@ -4802,6 +4814,7 @@ void WiFiScan::displayAPStats() {
 
 void WiFiScan::displayWardriveStats() {
   #ifdef HAS_SCREEN
+    if (rigOwnsScreen()) return;   // the case shows these counters in its hero
     #ifdef HAS_GPS
       uint8_t line_count = 0;
       display_obj.tft.fillRect(0,
@@ -8304,6 +8317,7 @@ void WiFiScan::signalAnalyzerLoop(uint32_t tick) {
 
 void WiFiScan::drawChannelLine() {
   #ifdef HAS_SCREEN
+    if (rigOwnsScreen()) return;   // the spectrum labels its own bars
     display_obj.tft.fillRect(0, SCREEN_HEIGHT - GRAPH_VERT_LIM - (CHAR_WIDTH * 2), SCREEN_WIDTH, (CHAR_WIDTH * 2) - 1, TFT_BLACK);
     #ifndef HAS_DUAL_BAND
       for (int i = 1; i < CHAN_PER_PAGE + 1; i++) {
@@ -8470,7 +8484,8 @@ void WiFiScan::channelActivityLoop(uint32_t tick) {
 
 void WiFiScan::displayAnalyzerString(String str) {
   #ifdef HAS_SCREEN
-    display_obj.tft.fillRect(0, 
+    if (rigOwnsScreen()) return;   // the case has its own body; this would land in it
+    display_obj.tft.fillRect(0,
                             TFT_HEIGHT - GRAPH_VERT_LIM - (CHAR_WIDTH * 4), 
                             TFT_WIDTH, 
                             CHAR_WIDTH + 2, 
@@ -8546,7 +8561,11 @@ void WiFiScan::renderRawStats() {
 
 void WiFiScan::renderPacketRate() {
   uint8_t line_count = 0;
+  // The rig case draws these counts as its ranked instrument; the serial
+  // report stays.
+  const bool draw = !rigOwnsScreen();
   #ifdef HAS_SCREEN
+   if (draw) {
     display_obj.tft.fillRect(0,
                             (STATUS_BAR_WIDTH * 2) + 1 + EXT_BUTTON_WIDTH,
                             TFT_WIDTH,
@@ -8555,13 +8574,14 @@ void WiFiScan::renderPacketRate() {
     display_obj.tft.setCursor(0, (STATUS_BAR_WIDTH * 2) + CHAR_WIDTH + EXT_BUTTON_WIDTH);
     display_obj.tft.setTextSize(1);
     display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
+   }
   #endif
 
   for (int i = 0; i < access_points->size(); i++) {
     AccessPoint access_point = access_points->get(i);
     if (access_point.selected) {
       #ifdef HAS_SCREEN
-        display_obj.tft.println(access_point.essid + ": " + (String)access_point.packets);
+        if (draw) display_obj.tft.println(access_point.essid + ": " + (String)access_point.packets);
       #endif
       Serial.println(access_point.essid + ": " + (String)access_point.packets);
     }
@@ -8570,7 +8590,7 @@ void WiFiScan::renderPacketRate() {
     Station station = stations->get(i);
     if (station.selected) {
       #ifdef HAS_SCREEN
-        display_obj.tft.println(macToString(station.mac) + ": " + (String)station.packets);
+        if (draw) display_obj.tft.println(macToString(station.mac) + ": " + (String)station.packets);
       #endif
       Serial.println(macToString(station.mac) + ": " + (String)station.packets);
     }
@@ -8805,8 +8825,12 @@ void WiFiScan::updateTrackerUI() {
   MacEntry ui_list[10];
   uint8_t n = this->build_top10_for_ui(ui_list, MacSortMode::MOST_FRAMES);
 
-  #ifdef HAS_SCREEN
+  // The rig case draws this list as its ranked instrument; keep the serial
+  // report either way.
+  const bool draw = !rigOwnsScreen();
 
+  #ifdef HAS_SCREEN
+   if (draw) {
     display_obj.tft.setCursor(0, (STATUS_BAR_WIDTH * 1) + CHAR_WIDTH + EXT_BUTTON_WIDTH + 1);
 
     display_obj.tft.setTextColor(TFT_RED, TFT_BLACK);
@@ -8816,7 +8840,7 @@ void WiFiScan::updateTrackerUI() {
     display_obj.tft.setTextColor(TFT_CYAN, TFT_BLACK);
     display_obj.tft.print("BLE");
 
-  
+
     display_obj.tft.fillRect(0,
                             (STATUS_BAR_WIDTH * 2) + CHAR_WIDTH - 1 + EXT_BUTTON_WIDTH,
                             TFT_WIDTH,
@@ -8824,6 +8848,7 @@ void WiFiScan::updateTrackerUI() {
                             TFT_BLACK);
     display_obj.tft.setCursor(0, (STATUS_BAR_WIDTH * 2) + CHAR_WIDTH + EXT_BUTTON_WIDTH);
     display_obj.tft.setTextSize(1);
+   }
   #endif
 
   Serial.println(F("---------------"));
@@ -8831,28 +8856,30 @@ void WiFiScan::updateTrackerUI() {
   for (int i = 0; i < n; i++) {
     if (ui_list[i].following) {
       #ifdef HAS_SCREEN
-        display_obj.tft.setTextColor(TFT_RED, TFT_BLACK);
+        if (draw) display_obj.tft.setTextColor(TFT_RED, TFT_BLACK);
       #endif
       Serial.print(F("FOLLOWING "));
     }
     else if (ui_list[i].bt) {
       #ifdef HAS_SCREEN
-        display_obj.tft.setTextColor(TFT_CYAN, TFT_BLACK);
+        if (draw) display_obj.tft.setTextColor(TFT_CYAN, TFT_BLACK);
       #endif
     }
     else {
       #ifdef HAS_SCREEN
-        display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        if (draw) display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
       #endif
     }
 
     #ifdef HAS_SCREEN
+     if (draw) {
       #ifndef HAS_MINI_SCREEN
         display_obj.tft.println((String)ui_list[i].rssi + " " + macToString(ui_list[i].mac) + " Tx: " + (String)ui_list[i].frame_count + " " + (String)((millis() - ui_list[i].last_seen_ms) / 1000) + "s " + (String)ui_list[i].dloc);
       #else
         String mac_str = macToString(ui_list[i].mac);
         display_obj.tft.println(mac_str.substring(mac_str.length() / 2) + " Tx: " + (String)ui_list[i].frame_count + " " + (String)((millis() - ui_list[i].last_seen_ms) / 1000) + "s ");
       #endif
+     }
     #endif
 
     Serial.print(macToString(ui_list[i].mac));
@@ -9169,6 +9196,20 @@ void WiFiScan::runFoxHunt(uint32_t currentTime) {
       this->last_ui_update = millis();
     else
       return;
+
+    if (rigOwnsScreen()) {
+      // The instrument case draws the meter. Keep the one side effect the stock
+      // screen had: Fox Hunt on Wi-Fi parks the radio on the target's channel.
+      if (currentScanMode == WIFI_SCAN_SIG_STREN) {
+        for (int i = 0; i < access_points->size(); i++) {
+          if (access_points->get(i).selected) {
+            this->changeChannel(access_points->get(i).channel);
+            break;
+          }
+        }
+      }
+      return;
+    }
 
     display_obj.tft.fillRect(0, (TFT_HEIGHT / 3), TFT_WIDTH, TFT_HEIGHT / 3, TFT_BLACK);
 
