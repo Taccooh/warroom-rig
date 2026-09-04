@@ -53,11 +53,12 @@ static const char* WDG_BOUNDARY = "marauderboundary7f3a9c2e4b1d8f5a";
 // spot for ESP32 mbedtls (default record buffer ~4 KB).
 static const size_t UPLOAD_CHUNK_BYTES = 1024;
 
-// Top of our content: below Marauder's status bar and the "WDGWars Upload"
-// banner, both of which this view still leaves in place. 34 px is a quarter of
-// the Cardputer ADV's 135 px screen, and the bar itself is half as tall there
-// (STATUS_BAR_WIDTH is SCREEN_HEIGHT/16), so the offset follows the screen.
-static const int16_t WDG_TOP = RigTheme::COMPACT ? 20 : 34;
+// Top of our content: below the rig case's bronze bar and status line, which
+// RigView paints for this view (drawCaseChrome at init, tickCaseChrome from
+// RigUI while it runs). The Marauder status bar and the old "WDGWars Upload"
+// banner are gone from here.
+#include "RigView.h"
+static const int16_t WDG_TOP = RigTheme::HEADER_H + 4;
 
 // =========================================================================
 // Embedded root CAs — both issuer families Cloudflare fronts this host with
@@ -200,12 +201,10 @@ void WdgwarsUpload::init() {
 
     #ifdef HAS_SCREEN
         display_obj.clearScreen();
+        rig_view_obj.drawCaseChrome("UPLOAD");
         display_obj.tft.setTextSize(1);
-        display_obj.tft.setTextColor(TFT_ORANGE);
-        display_obj.tft.setCursor(4, 4);
-        display_obj.tft.print("WDGWars Upload");
-        display_obj.tft.setTextColor(TFT_WHITE);
-        display_obj.tft.setCursor(4, 18);
+        display_obj.tft.setTextColor(RigTheme::DIM, TFT_BLACK);
+        display_obj.tft.setCursor(4, WDG_TOP + 2);
         display_obj.tft.print("Loading settings...");
     #endif
 }
@@ -853,15 +852,15 @@ void WdgwarsUpload::renderDisplay() {
         display_obj.tft.fillRect(0, top, display_obj.tft.width(),
                                  display_obj.tft.height() - top, TFT_BLACK);
         display_obj.tft.setTextSize(1);
-        display_obj.tft.setTextColor(TFT_WHITE);
+        display_obj.tft.setTextColor(RigTheme::INK);
         int16_t y = top + 2;
 
         switch (state) {
             case State::SETTINGS_ERROR:
-                display_obj.tft.setTextColor(TFT_RED);
+                display_obj.tft.setTextColor(RigTheme::RED);
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.print("Settings error:");
-                display_obj.tft.setTextColor(TFT_WHITE);
+                display_obj.tft.setTextColor(RigTheme::INK);
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.print(last_error_msg);
                 display_obj.tft.setCursor(4, y + LH);
@@ -885,10 +884,10 @@ void WdgwarsUpload::renderDisplay() {
                 break;
 
             case State::AP_FAILED:
-                display_obj.tft.setTextColor(TFT_RED);
+                display_obj.tft.setTextColor(RigTheme::RED);
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.print("AP connect failed");
-                display_obj.tft.setTextColor(TFT_WHITE);
+                display_obj.tft.setTextColor(RigTheme::INK);
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.print(last_error_msg);
                 display_obj.tft.setCursor(4, y + LH);
@@ -896,6 +895,15 @@ void WdgwarsUpload::renderDisplay() {
                 break;
 
             case State::UPLOADING: {
+                // Feed the case's traffic pulse from what "traffic" means here:
+                // kilobytes that left the rig since the last paint.
+                {
+                    static uint64_t pulsed_bytes = 0;
+                    if (total_bytes_uploaded < pulsed_bytes) pulsed_bytes = 0;   // new run
+                    uint64_t d = total_bytes_uploaded - pulsed_bytes;
+                    pulsed_bytes = total_bytes_uploaded;
+                    rig_view_obj.pulse((uint16_t)((d / 1024) > 60 ? 60 : (d / 1024)));
+                }
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.printf("[%u/%u]", (unsigned)(ok_count + err_count + 1),
                                        (unsigned)upload_total);
@@ -920,18 +928,18 @@ void WdgwarsUpload::renderDisplay() {
                 }
                 // Why the last one failed, in the server's own words.
                 if (err_count > 0 && last_error_msg.length() > 0) {
-                    display_obj.tft.setTextColor(TFT_RED);
+                    display_obj.tft.setTextColor(RigTheme::RED);
                     wdgPrintWrapped(4, y, LH, last_error_msg, 3);
-                    display_obj.tft.setTextColor(TFT_WHITE);
+                    display_obj.tft.setTextColor(RigTheme::INK);
                 }
                 break;
             }
 
             case State::DONE: {
-                display_obj.tft.setTextColor(TFT_GREEN);
+                display_obj.tft.setTextColor(RigTheme::GREEN);
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.print("Done.");
-                display_obj.tft.setTextColor(TFT_WHITE);
+                display_obj.tft.setTextColor(RigTheme::INK);
                 display_obj.tft.setCursor(4, y); y += LH;
                 display_obj.tft.printf("OK:  %u", ok_count);
                 display_obj.tft.setCursor(4, y); y += LH;
@@ -944,9 +952,9 @@ void WdgwarsUpload::renderDisplay() {
                 bool showed_err = (err_count > 0 && last_error_msg.length() > 0);
                 if (showed_err) {
                     y += 4;
-                    display_obj.tft.setTextColor(TFT_RED);
+                    display_obj.tft.setTextColor(RigTheme::RED);
                     wdgPrintWrapped(4, y, LH, last_error_msg, 4);
-                    display_obj.tft.setTextColor(TFT_WHITE);
+                    display_obj.tft.setTextColor(RigTheme::INK);
                 }
                 // Keep the original blank-line gap before the hint; after a
                 // wrapped error block the text already provides the separation.
@@ -966,13 +974,11 @@ void WdgwarsUpload::renderDisplay() {
 void WdgwarsUpload::renderConfirmPrompt() {
     #ifdef HAS_SCREEN
         display_obj.clearScreen();
+        rig_view_obj.drawCaseChrome("UPLOAD");
         display_obj.tft.setTextSize(1);
-        display_obj.tft.setTextColor(TFT_ORANGE);
-        display_obj.tft.setCursor(4, 4);
-        display_obj.tft.print("WDGWars Upload");
 
-        display_obj.tft.setTextColor(TFT_WHITE);
-        int16_t y = 22;
+        display_obj.tft.setTextColor(RigTheme::INK, TFT_BLACK);
+        int16_t y = WDG_TOP + 2;
         const int16_t LH = 12;
 
         // Sum file sizes for the prompt.
@@ -991,7 +997,7 @@ void WdgwarsUpload::renderConfirmPrompt() {
         display_obj.tft.printf("Total: %llu KB",
                                (unsigned long long)(total / 1024));
 
-        display_obj.tft.setTextColor(TFT_CYAN);
+        display_obj.tft.setTextColor(RigTheme::GOLD);
         display_obj.tft.setCursor(4, y); y += LH;
         display_obj.tft.print(RIG_HINT_CONFIRM);
         display_obj.tft.setCursor(4, y);
@@ -1031,7 +1037,7 @@ void WdgwarsUpload::renderSelectList() {
             uint8_t i = sel_top + r;
             if (i >= pending_count) break;
             bool cursor = (i == sel_cursor);
-            display_obj.tft.setTextColor(cursor ? TFT_CYAN : TFT_WHITE);
+            display_obj.tft.setTextColor(cursor ? RigTheme::GOLD : RigTheme::INK);
             display_obj.tft.setCursor(4, y); y += LH;
             String name = pending_files[i];
             int s = name.lastIndexOf('/');
@@ -1048,10 +1054,10 @@ void WdgwarsUpload::renderSelectList() {
 
         // Footer: selected count + button legend.
         int16_t fy = display_obj.tft.height();
-        display_obj.tft.setTextColor(TFT_GREEN);
+        display_obj.tft.setTextColor(RigTheme::GREEN);
         display_obj.tft.setCursor(4, fy - 22);
         display_obj.tft.printf("%u/%u selected", sel_n, pending_count);
-        display_obj.tft.setTextColor(TFT_DARKGREY);
+        display_obj.tft.setTextColor(RigTheme::DIM2);
         display_obj.tft.setCursor(4, fy - 10);
         display_obj.tft.print(RIG_HINT_PICK);
     #endif
@@ -1106,7 +1112,7 @@ static int wdgTouchHitTest(uint16_t x, uint16_t y, uint8_t visible) {
 static void wdgDrawButton(int x, int y, int w, int h, const char* label,
                           uint16_t fill, uint16_t border, bool enabled = true) {
     uint16_t f = enabled ? fill : TFT_BLACK;
-    uint16_t b = enabled ? border : TFT_DARKGREY;
+    uint16_t b = enabled ? border : RigTheme::DIM2;
     display_obj.tft.fillRoundRect(x, y, w, h, 5, f);
     display_obj.tft.drawRoundRect(x, y, w, h, 5, b);
     display_obj.tft.setTextSize(2);
@@ -1128,7 +1134,7 @@ void WdgwarsUpload::renderSelectListTouch() {
         for (uint8_t i = 0; i < pending_count; i++) if (file_selected[i]) sel_n++;
 
         display_obj.tft.setTextSize(1);
-        display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+        display_obj.tft.setTextColor(RigTheme::DIM2, TFT_BLACK);
         display_obj.tft.setCursor(4, 40);
         display_obj.tft.printf("Tap logs   %u/%u selected", sel_n, pending_count);
 
@@ -1141,11 +1147,11 @@ void WdgwarsUpload::renderSelectListTouch() {
 
             if (on) display_obj.tft.fillRoundRect(WT_ROW_X, ry, WT_ROW_W, WT_ROW_INNER_H, 4, TFT_DARKGREEN);
             display_obj.tft.drawRoundRect(WT_ROW_X, ry, WT_ROW_W, WT_ROW_INNER_H, 4,
-                                          on ? TFT_GREEN : TFT_DARKGREY);
+                                          on ? RigTheme::GREEN : RigTheme::DIM2);
             // Checkbox.
             int cbx = WT_ROW_X + 8, cby = ry + (WT_ROW_INNER_H - 16) / 2;
-            display_obj.tft.drawRect(cbx, cby, 16, 16, on ? TFT_GREEN : TFT_LIGHTGREY);
-            if (on) display_obj.tft.fillRect(cbx + 3, cby + 3, 10, 10, TFT_GREEN);
+            display_obj.tft.drawRect(cbx, cby, 16, 16, on ? RigTheme::GREEN : TFT_LIGHTGREY);
+            if (on) display_obj.tft.fillRect(cbx + 3, cby + 3, 10, 10, RigTheme::GREEN);
 
             // Filename (strip path + ".log", trim to fit).
             String name = pending_files[i];
@@ -1155,7 +1161,7 @@ void WdgwarsUpload::renderSelectListTouch() {
             if (dot > 0) name = name.substring(0, dot);
             if (name.length() > 12) name = name.substring(0, 12);
             display_obj.tft.setTextSize(2);
-            display_obj.tft.setTextColor(on ? TFT_WHITE : TFT_LIGHTGREY,
+            display_obj.tft.setTextColor(on ? RigTheme::INK : TFT_LIGHTGREY,
                                          on ? TFT_DARKGREEN : TFT_BLACK);
             display_obj.tft.setCursor(cbx + 24, ry + 7);
             display_obj.tft.print(name);
@@ -1165,7 +1171,7 @@ void WdgwarsUpload::renderSelectListTouch() {
             String szs = (sz >= 1024) ? (String((sz + 512) / 1024) + "K")
                                       : (String(sz) + "B");
             display_obj.tft.setTextSize(1);
-            display_obj.tft.setTextColor(on ? TFT_GREEN : TFT_DARKGREY,
+            display_obj.tft.setTextColor(on ? RigTheme::GREEN : RigTheme::DIM2,
                                          on ? TFT_DARKGREEN : TFT_BLACK);
             display_obj.tft.setCursor(WT_ROW_X + WT_ROW_W - 40, ry + 11);
             display_obj.tft.print(szs);
@@ -1174,16 +1180,16 @@ void WdgwarsUpload::renderSelectListTouch() {
         // Scroll bar (paged). Greyed out when there is nothing to scroll.
         bool can_up   = (sel_top > 0);
         bool can_down = (sel_top + WT_ROWS < pending_count);
-        wdgDrawButton(WT_UP_X, WT_SCR_Y, WT_UP_W, WT_SCR_H, "UP",   TFT_NAVY, TFT_CYAN, can_up);
-        wdgDrawButton(WT_DN_X, WT_SCR_Y, WT_DN_W, WT_SCR_H, "DOWN", TFT_NAVY, TFT_CYAN, can_down);
+        wdgDrawButton(WT_UP_X, WT_SCR_Y, WT_UP_W, WT_SCR_H, "UP",   TFT_NAVY, RigTheme::GOLD, can_up);
+        wdgDrawButton(WT_DN_X, WT_SCR_Y, WT_DN_W, WT_SCR_H, "DOWN", TFT_NAVY, RigTheme::GOLD, can_down);
 
         // Action bar.
-        wdgDrawButton(WT_ALL_X, WT_ACT_Y, WT_ALL_W, WT_ACT_H, "ALL", TFT_DARKGREY, TFT_WHITE);
+        wdgDrawButton(WT_ALL_X, WT_ACT_Y, WT_ALL_W, WT_ACT_H, "ALL", RigTheme::DIM2, RigTheme::INK);
         char golbl[16];
         snprintf(golbl, sizeof(golbl), "GO %u", (unsigned)sel_n);
         wdgDrawButton(WT_GO_X, WT_ACT_Y, WT_GO_W, WT_ACT_H, golbl,
-                      sel_n ? TFT_DARKGREEN : TFT_BLACK, sel_n ? TFT_GREEN : TFT_DARKGREY, sel_n > 0);
-        wdgDrawButton(WT_EXIT_X, WT_ACT_Y, WT_EXIT_W, WT_ACT_H, "EXIT", TFT_MAROON, TFT_RED);
+                      sel_n ? TFT_DARKGREEN : TFT_BLACK, sel_n ? RigTheme::GREEN : RigTheme::DIM2, sel_n > 0);
+        wdgDrawButton(WT_EXIT_X, WT_ACT_Y, WT_EXIT_W, WT_ACT_H, "EXIT", TFT_MAROON, RigTheme::RED);
     #endif
 }
 #endif // HAS_TOUCH

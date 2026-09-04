@@ -829,12 +829,16 @@ void FileServerAP::runTick() {
 static const int FS_GAP       = RigTheme::COMPACT ? 4 : 8;
 static const int FS_X         = 4;
 static const int FS_LH        = RigTheme::COMPACT ? 10 : 16;
-static const int FS_Y_TITLE   = RigTheme::COMPACT ?  2 : 28;
-static const int FS_Y_SSID    = RigTheme::COMPACT ? 22 : 60;
+// The rows start under the rig case's bar and status line, which RigView
+// paints for this view; the old "File Server" title is carried by the bar.
+// On the short screen the channel row is dropped -- the status line shows
+// the channel there -- so the block still clears the footer.
+#include "RigView.h"
+static const int FS_Y_SSID    = RigTheme::HEADER_H + 8;
 static const int FS_Y_PASS    = FS_Y_SSID + FS_LH;
 static const int FS_Y_IP      = FS_Y_PASS + FS_LH;
 static const int FS_Y_CHAN    = FS_Y_IP + FS_LH;
-static const int FS_Y_LOGIN   = FS_Y_CHAN + FS_LH;
+static const int FS_Y_LOGIN   = RigTheme::COMPACT ? FS_Y_CHAN : (FS_Y_CHAN + FS_LH);
 static const int FS_Y_CLIENTS = FS_Y_LOGIN + FS_LH + FS_GAP;
 static const int FS_Y_COUNTS  = FS_Y_CLIENTS + FS_LH;
 static const int FS_Y_LAST    = FS_Y_COUNTS + FS_LH + FS_GAP;
@@ -855,15 +859,12 @@ static const int FS_PATH_COLS = (SCREEN_WIDTH / 6) - 6;
 void FileServerAP::drawStaticFrame() {
     #ifdef HAS_SCREEN
         display_obj.clearScreen();
-        display_obj.tft.setTextSize(2);
-        display_obj.tft.setTextColor(TFT_CYAN, TFT_BLACK);
-        display_obj.tft.setCursor(FS_X, FS_Y_TITLE);
-        display_obj.tft.print("File Server");
+        rig_view_obj.drawCaseChrome("FILE SRV");
 
         display_obj.tft.setTextSize(1);
 
         if (state == State::AP_FAILED) {
-            display_obj.tft.setTextColor(TFT_RED, TFT_BLACK);
+            display_obj.tft.setTextColor(RigTheme::RED, TFT_BLACK);
             display_obj.tft.setCursor(FS_X, FS_Y_SSID);
             display_obj.tft.print("AP start failed");
             display_obj.tft.setCursor(FS_X, FS_Y_PASS);
@@ -876,23 +877,25 @@ void FileServerAP::drawStaticFrame() {
             // is the only place the operator can read them. That is the point:
             // whoever can see the display is standing at the rig. Nothing here
             // is derivable from what the AP puts on the air.
-            display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            display_obj.tft.setTextColor(RigTheme::INK, TFT_BLACK);
             display_obj.tft.setCursor(FS_X, FS_Y_SSID);
             display_obj.tft.printf("SSID:  %s", ssid.c_str());
             display_obj.tft.setCursor(FS_X, FS_Y_PASS);
             display_obj.tft.printf("Pass:  %s", password.c_str());
             display_obj.tft.setCursor(FS_X, FS_Y_IP);
             display_obj.tft.printf("IP:    %s", WiFi.softAPIP().toString().c_str());
-            display_obj.tft.setCursor(FS_X, FS_Y_CHAN);
-            display_obj.tft.printf("Chan:  %u", (unsigned)AP_CHANNEL);
-            display_obj.tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+            if (!RigTheme::COMPACT) {   // the short screen's status line carries the channel
+                display_obj.tft.setCursor(FS_X, FS_Y_CHAN);
+                display_obj.tft.printf("Chan:  %u", (unsigned)AP_CHANNEL);
+            }
+            display_obj.tft.setTextColor(RigTheme::GOLD, TFT_BLACK);
             display_obj.tft.setCursor(FS_X, FS_Y_LOGIN);
             display_obj.tft.printf("Login: %s / %s", http_user.c_str(), http_password.c_str());
         }
 
         // Name the keys this board actually has. "CENTER hold" is meaningless on
         // a keyboard, and it was the only instruction on screen.
-        display_obj.tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+        display_obj.tft.setTextColor(RigTheme::DIM2, TFT_BLACK);
         display_obj.tft.setCursor(FS_X, FS_Y_FOOTER);
         #ifdef HAS_TOUCH
             display_obj.tft.print("[tap screen to exit]");
@@ -922,12 +925,21 @@ void FileServerAP::renderDisplay() {
 
         // Clients counter — written in green, padded so a drop from 2 -> 1
         // clean-overwrites the trailing digit slot.
-        display_obj.tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        display_obj.tft.setTextColor(RigTheme::GREEN, TFT_BLACK);
         display_obj.tft.setCursor(FS_X, FS_Y_CLIENTS);
         display_obj.tft.printf("Clients: %u   ", (unsigned)WiFi.softAPgetStationNum());
 
+        // Feed the case's traffic pulse: requests served since the last paint.
+        {
+            static uint32_t pulsed_hits = 0;
+            uint32_t hits = (uint32_t)total_get_count + (uint32_t)total_dl_count + (uint32_t)total_rm_count;
+            if (hits < pulsed_hits) pulsed_hits = 0;   // counters reset on a new session
+            rig_view_obj.pulse((uint16_t)((hits - pulsed_hits) > 60 ? 60 : (hits - pulsed_hits)));
+            pulsed_hits = hits;
+        }
+
         // Hit counters.
-        display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        display_obj.tft.setTextColor(RigTheme::INK, TFT_BLACK);
         display_obj.tft.setCursor(FS_X, FS_Y_COUNTS);
         display_obj.tft.printf("GET %lu  DL %lu  RM %lu          ",
                                (unsigned long)total_get_count,
@@ -937,7 +949,7 @@ void FileServerAP::renderDisplay() {
         // Last request line — trim long paths from the left so the tail
         // (which is the most informative bit) stays visible. Pad to a fixed
         // width so a shorter follow-up path doesn't leave stale glyphs.
-        display_obj.tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display_obj.tft.setTextColor(RigTheme::DIM, TFT_BLACK);
         display_obj.tft.setCursor(FS_X, FS_Y_LAST);
         // Take a private copy under the lock first — everything below runs on
         // the loop task and must not walk storage the HTTP task can rewrite.

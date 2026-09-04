@@ -44,7 +44,18 @@ public:
         SPECTRUM,   // one bar per channel (Channel Summary)
         SERIES,     // a scrolling time series (Channel / BT Analyzer)
         METER,      // one signal, big: Fox Hunt
+        SHEET,      // label / value rows: Device Info, GPS, Host AP
     };
+
+    // ---- Case chrome for the rig's own modules ------------------------------
+    // Upload and the File Server are state machines that draw their own bodies
+    // and are not routed through tick(). They still wear the case: this paints
+    // the bronze bar (title, pulse, battery) and the status line for them, and
+    // tickCaseChrome() keeps the live parts moving. pulse() lets a module feed
+    // the traffic sparkline from whatever "traffic" means to it.
+    void drawCaseChrome(const char* title);
+    void tickCaseChrome(uint32_t now);
+    void pulse(uint16_t n) { pulse_accum_ += n; }
 
     // Is this scan mode one RigView draws? Used by RigUI to route it here and by
     // MenuFunctions / WiFiScan to suppress their own drawing for it. Returns the
@@ -125,13 +136,15 @@ private:
     uint32_t meter_step_ms_ = 0;
     char     meter_name_[24] = "";
 
-    // ---- RANK: rows are re-read from WiFiScan each paint --------------------
-    uint32_t rank_sig_ = 0;               // hash of what was drawn last
+    // ---- RANK / SHEET: rows are re-read each paint, redrawn on change ------
+    uint32_t rank_sig_  = 0;              // hash of what was drawn last
+    uint32_t sheet_sig_ = 0;
 
     void begin(uint8_t scan_mode);
     void drainBuffer();
     void pushLine(const String& raw);
     void gather(uint32_t now);        // per-kind data refresh before a paint
+    void advancePulse(uint32_t now);  // close a pulse slot every 250 ms
 
     void drawFrame();                 // full: clear + static chrome
     void drawBar(bool full);          // bronze bar: title (full) + pulse + battery
@@ -144,6 +157,7 @@ private:
     void drawSpectrum();              // SPECTRUM
     void drawSeries();                // SERIES
     void drawMeter();                 // METER
+    void drawSheet();                 // SHEET
 };
 
 extern RigView rig_view_obj;

@@ -3586,7 +3586,10 @@ bool WiFiScan::RunGPSInfo(bool tracker, bool display, bool poi) {
 
     if (display) {
       //Serial.println(F("Refreshing GPS Data on screen..."));
+      // The rig case draws the GPS sheet from gps_obj itself; only the stock
+      // text is skipped, the serial report below stays.
       #ifdef HAS_SCREEN
+       if (!rigOwnsScreen()) {
 
         // Get screen position ready
         display_obj.tft.setTextWrap(false);
@@ -3616,6 +3619,7 @@ bool WiFiScan::RunGPSInfo(bool tracker, bool display, bool poi) {
         display_obj.tft.println("  Lon: " + gps_obj.getLon());
         display_obj.tft.println("  Alt: " + (String)gps_obj.getAlt());
         display_obj.tft.println("  D/T: " + gps_obj.getDatetime());
+       }
       #endif
 
       // Display to serial
@@ -4765,6 +4769,12 @@ void WiFiScan::onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 
 void WiFiScan::displayAPStats() {
   #ifdef HAS_SCREEN
+    if (rigOwnsScreen()) {
+      // The case draws the Host AP sheet; keep the client bookkeeping.
+      uint8_t num_clients = WiFi.softAPgetStationNum();
+      if (num_clients != this->connected_devices) this->connected_devices = num_clients;
+      return;
+    }
     display_obj.tft.fillRect(0,
                             (STATUS_BAR_WIDTH * 2),
                             TFT_WIDTH,

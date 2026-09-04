@@ -7,6 +7,8 @@
 #include "RigInput.h"       // RIG_HINT_*, RigInput::down
 #include "WiFiScan.h"
 #include "GorillaMini.h"
+#include <WiFi.h>           // soft-AP facts for the Host AP sheet
+#include <esp_system.h>     // esp_get_idf_version for the Device sheet
 
 extern Display  display_obj;
 extern WiFiScan wifi_scan_obj;
@@ -91,6 +93,13 @@ const RVMode RV_MODES[] = {
     // ---- METER: Fox Hunt ----
     { WIFI_SCAN_SIG_STREN,      "FOX HUNT",  0, RigView::METER },
     { BT_SCAN_FOX_HUNT,         "FOX HUNT",  1, RigView::METER },
+    // ---- SHEET: static facts, refreshed once a second ----
+    // band 1 here only means "no channel ribbon": these screens are not tuned
+    // to a channel, and on the short screen the status line shows SD instead.
+    { SHOW_INFO,                "DEVICE",    1, RigView::SHEET },   // RunInfo
+    { WIFI_SCAN_GPS_DATA,       "GPS DATA",  1, RigView::SHEET },   // RunGPSInfo
+    { GPS_TRACKER,              "GPS TRACK", 1, RigView::SHEET },   // RunGPSInfo(true) keeps logging
+    { WIFI_SCAN_DISPLAY_AP_INFO,"HOST AP",   1, RigView::SHEET },   // displayAPStats
 };
 const RVMode* rvLookup(uint8_t m) {
     for (const RVMode& e : RV_MODES) if (e.mode == m) return &e;
@@ -166,7 +175,8 @@ void RigView::begin(uint8_t scan_mode) {
     meter_hist_n_ = 0;
     meter_rssi_ = meter_peak_ = 0;
     meter_name_[0] = '\0';
-    rank_sig_ = 0;
+    rank_sig_  = 0;
+    sheet_sig_ = 0;
 
     need_full_ = true;
     drawn_ch_  = 0xFF;
@@ -351,6 +361,11 @@ void RigView::gather(uint32_t now) {
             pulse_accum_ += 1;
             changes_++;   // the rows are re-read and hashed at paint time
             break;
+
+        case SHEET:
+            // Facts move slowly; the paint hashes them and repaints on change.
+            if (now - meter_step_ms_ >= 1000) { meter_step_ms_ = now; changes_++; }
+            break;
     }
 }
 
@@ -360,14 +375,7 @@ void RigView::tick(uint32_t now) {
 
     gather(now);
 
-    if (now - pulse_step_ms_ >= 250) {
-        pulse_step_ms_ = now;
-        for (int i = 0; i < RigTheme::PULSE_N - 1; i++) pulse_[i] = pulse_[i + 1];
-        uint16_t v = pulse_accum_;
-        if (v > (uint16_t)RigTheme::PULSE_H) v = RigTheme::PULSE_H;
-        pulse_[RigTheme::PULSE_N - 1] = (uint8_t)v;
-        pulse_accum_ = 0;
-    }
+    advancePulse(now);
     if (now - rate_step_ms_ >= 5000) {
         rate_step_ms_ = now;
         rate_head_ = (rate_head_ + 1) % RATE_BUCKETS;
@@ -407,6 +415,11 @@ static void rvHeroLabels(uint8_t kind, uint8_t mode, const char*& a, const char*
     else if (kind == RigView::SPECTRUM)  { a = "BUSIEST"; b = "TOTAL";   c = "PAGE"; }
     else if (kind == RigView::SERIES)    { a = "NOW";     b = "MAX";     c = "AVG"; }
     else if (kind == RigView::METER)     { a = "RSSI";    b = "PEAK";    c = "TREND"; }
+    else if (kind == RigView::SHEET) {
+        if      (mode == SHOW_INFO)                 { a = "FIRMWARE"; b = "SD";   c = "BATT"; }
+        else if (mode == WIFI_SCAN_DISPLAY_AP_INFO) { a = "CLIENTS";  b = "CH";   c = "AP"; }
+        else                                        { a = "SATS";     b = "ACC";  c = "FIX"; }
+    }
 }
 
 void RigView::drawFrame() {
@@ -664,6 +677,45 @@ void RigView::drawHero() {
             cc = trend > 0 ? RV_GREEN : trend < 0 ? RV_RED : RV_DIM;
             break;
         }
+
+        case SHEET: {
+            if (mode_ == SHOW_INFO) {
+                snprintf(a, sizeof(a), "%s", WARROOM_RIG_VERSION);
+                #if defined(HAS_SD) && !defined(HAS_C5_SD)
+                    if (sd_obj.supported) { String s = sd_obj.card_sz; if (s.length() > 5) s = s.substring(0, 5); snprintf(b, sizeof(b), "%sM", s.c_str()); }
+                    else snprintf(b, sizeof(b), "--");
+                    cb = sd_obj.supported ? RV_INK : RV_RED;
+                #else
+                    snprintf(b, sizeof(b), "--"); cb = RV_DIM2;
+                #endif
+                #ifdef HAS_BATTERY
+                    if (battery_obj.i2c_supported) snprintf(c, sizeof(c), "%d%%", (int)battery_obj.battery_level);
+                    else snprintf(c, sizeof(c), "--");
+                    cc = battery_obj.i2c_supported ? RV_INK : RV_DIM2;
+                #else
+                    snprintf(c, sizeof(c), "--"); cc = RV_DIM2;
+                #endif
+                ca = RV_GOLD;
+            } else if (mode_ == WIFI_SCAN_DISPLAY_AP_INFO) {
+                unsigned n = WiFi.softAPgetStationNum();
+                snprintf(a, sizeof(a), "%u", n);
+                snprintf(b, sizeof(b), "%d", (int)WiFi.channel());
+                snprintf(c, sizeof(c), "ON");
+                ca = n ? RV_GOLD : RV_DIM2; cc = RV_GREEN;
+            } else {
+                #ifdef HAS_GPS
+                    bool fix = gps_obj.getFixStatus();
+                    snprintf(a, sizeof(a), "%d", gps_obj.getNumSats());
+                    { String acc = String(gps_obj.getAccuracy()); if (acc.length() > 5) acc = acc.substring(0, 5); snprintf(b, sizeof(b), "%s", acc.c_str()); }
+                    snprintf(c, sizeof(c), fix ? "YES" : "NO");
+                    ca = fix ? RV_GOLD : RV_AMBER; cc = fix ? RV_GREEN : RV_RED;
+                #else
+                    snprintf(a, sizeof(a), "--"); snprintf(b, sizeof(b), "--"); snprintf(c, sizeof(c), "--");
+                    ca = cb = cc = RV_DIM2;
+                #endif
+            }
+            break;
+        }
     }
 
     // Clear the value band (spine and labels are static), then the three values.
@@ -681,6 +733,7 @@ void RigView::drawBody() {
         case SPECTRUM: drawSpectrum(); break;
         case SERIES:   drawSeries();   break;
         case METER:    drawMeter();    break;
+        case SHEET:    drawSheet();    break;
     }
 }
 
@@ -1002,6 +1055,138 @@ void RigView::drawMeter() {
         }
     }
     tft.setTextDatum(TL_DATUM);
+}
+
+// ---- SHEET -----------------------------------------------------------------
+// Label / value rows. On the tall screen each row is a small label over a
+// larger value; on the short one label and value share a line. The rows are
+// re-read every paint and only redrawn when their content changed.
+
+namespace {
+struct SheetRow { const char* label; char value[40]; uint16_t color; };
+}
+
+void RigView::drawSheet() {
+    SheetRow rows[9];
+    int n = 0;
+    auto put = [&](const char* label, const String& v, uint16_t col = RV_INK) {
+        if (n >= 9) return;
+        rows[n].label = label;
+        strncpy(rows[n].value, v.c_str(), sizeof(rows[n].value) - 1);
+        rows[n].value[sizeof(rows[n].value) - 1] = '\0';
+        rows[n].color = col;
+        n++;
+    };
+
+    if (mode_ == SHOW_INFO) {
+        uint8_t sta[6], ap[6]; char m[20];
+        wifi_scan_obj.getMAC(true, sta);
+        wifi_scan_obj.getMAC(false, ap);
+        put("FIRMWARE", String(WARROOM_RIG_VERSION) + "  (Marauder " + String(MARAUDER_VERSION) + ")");
+        put("HARDWARE", String(HARDWARE_NAME));
+        put("ESP-IDF",  String(esp_get_idf_version()));
+        rvMacShort(m, sizeof(m), sta); put("STA MAC", String(m));
+        rvMacShort(m, sizeof(m), ap);  put("AP MAC",  String(m));
+        #if defined(HAS_SD) && !defined(HAS_C5_SD)
+            if (sd_obj.supported) put("SD CARD", sd_obj.card_sz + " MB");
+            else                  put("SD CARD", "not found", RV_RED);
+        #endif
+        #ifdef HAS_BATTERY
+            if (battery_obj.i2c_supported) put("BATTERY", String((int)battery_obj.battery_level) + "%");
+            else                           put("BATTERY", "no gauge", RV_DIM);
+        #endif
+    } else if (mode_ == WIFI_SCAN_DISPLAY_AP_INFO) {
+        put("SSID",    WiFi.softAPSSID());
+        put("IP",      WiFi.softAPIP().toString());
+        put("CLIENTS", String((unsigned)WiFi.softAPgetStationNum()));
+        put("CHANNEL", String((int)WiFi.channel()));
+    } else {
+        #ifdef HAS_GPS
+            bool fix = gps_obj.getFixStatus();
+            put("FIX",  fix ? "yes" : "no", fix ? RV_GREEN : RV_RED);
+            put("LAT",  gps_obj.getLat());
+            put("LON",  gps_obj.getLon());
+            put("ALT",  String(gps_obj.getAlt()));
+            put("TIME", gps_obj.getDatetime());
+            String txt = gps_obj.getText();
+            if (txt.length()) put("TEXT", txt, RV_DIM);
+        #else
+            put("GPS", "no module", RV_RED);
+        #endif
+    }
+
+    uint32_t sig = (uint32_t)n * 7919;
+    for (int i = 0; i < n; i++) for (const char* p = rows[i].value; *p; p++) sig = sig * 31 + (uint8_t)*p;
+    if (sig == sheet_sig_) return;
+    sheet_sig_ = sig;
+
+    auto& tft = display_obj.tft;
+    const int by = RigTheme::TOOL_BODY_Y, bend = RigTheme::TOOL_BODY_END;
+    const int pitch = RigTheme::COMPACT ? 13 : 26;
+    const int fits = (bend - by) / pitch;
+    tft.fillRect(0, by, SCREEN_WIDTH, bend - by, TFT_BLACK);
+
+    int shown = fits < n ? fits : n;
+    for (int r = 0; r < shown; r++) {
+        int y = by + r * pitch;
+        if (RigTheme::COMPACT) {
+            tft.setTextDatum(ML_DATUM);
+            tft.setTextColor(RV_DIM2, TFT_BLACK);
+            tft.drawString(rows[r].label, 12, y + pitch / 2, 1);
+            String v = rows[r].value;
+            int maxch = (SCREEN_WIDTH - 12 - 6 * (int)strlen(rows[r].label) - 20) / 6;
+            if ((int)v.length() > maxch) v = v.substring(0, maxch);
+            tft.setTextDatum(MR_DATUM);
+            tft.setTextColor(rows[r].color, TFT_BLACK);
+            tft.drawString(v, SCREEN_WIDTH - 8, y + pitch / 2, 1);
+        } else {
+            tft.setTextDatum(TL_DATUM);
+            tft.setTextColor(RV_DIM2, TFT_BLACK);
+            tft.drawString(rows[r].label, 12, y + 1, 1);
+            String v = rows[r].value;
+            if ((int)v.length() > 26) v = v.substring(0, 26);
+            tft.setTextColor(rows[r].color, TFT_BLACK);
+            tft.drawString(v, 12, y + 10, 2);
+        }
+    }
+    tft.setTextDatum(TL_DATUM);
+}
+
+// ---------------------------------------------------------------------------
+// Pulse slot + case chrome for the rig's own modules
+// ---------------------------------------------------------------------------
+
+void RigView::advancePulse(uint32_t now) {
+    if (now - pulse_step_ms_ < 250) return;
+    pulse_step_ms_ = now;
+    for (int i = 0; i < RigTheme::PULSE_N - 1; i++) pulse_[i] = pulse_[i + 1];
+    uint16_t v = pulse_accum_;
+    if (v > (uint16_t)RigTheme::PULSE_H) v = RigTheme::PULSE_H;
+    pulse_[RigTheme::PULSE_N - 1] = (uint8_t)v;
+    pulse_accum_ = 0;
+}
+
+// Paint the bar and status line for a module that draws its own body. band 1
+// means no channel ribbon (these modules are not tuned to a channel) and, on
+// the short screen, SD state in the status line instead of a channel. The
+// module clears the screen itself first; this only paints the top.
+void RigView::drawCaseChrome(const char* title) {
+    mode_  = 0xFF;                    // not one of the table's modes; tick() is not used
+    title_ = title;
+    band_  = 1;
+    kind_  = SHEET;
+    for (auto& v : pulse_) v = 0;
+    pulse_accum_ = 0;
+    uint32_t now = millis();
+    pulse_step_ms_ = last_frame_ms_ = last_feed_ms_ = now;
+    drawBar(true);
+    drawStatus();
+}
+
+void RigView::tickCaseChrome(uint32_t now) {
+    advancePulse(now);
+    if (now - last_feed_ms_ >= 250)  { last_feed_ms_  = now; drawBar(false); }
+    if (now - last_frame_ms_ >= 1000) { last_frame_ms_ = now; drawStatus(); }
 }
 
 // ---------------------------------------------------------------------------

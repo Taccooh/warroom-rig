@@ -588,22 +588,20 @@ void RigUI::main(uint32_t currentTime) {
             #endif
 
             // Ours draw themselves. Rig Mode owns its full screen including the
-            // header; Upload and File Server deliberately leave the framework
-            // status bar in place at the top and draw below it, so that strip
-            // still needs refreshing or it would sit frozen for the whole run.
+            // header; Upload and File Server draw their bodies under the rig
+            // case's bar and status line (RigView::drawCaseChrome at their
+            // init), so the live parts of that chrome -- pulse, battery, GPS /
+            // SD -- are kept moving from here. The Marauder status bar no
+            // longer appears on these screens.
             #if defined(MARAUDER_WDGWARS_UPLOAD) || defined(MARAUDER_FILE_SERVER_AP)
-                bool wants_bar = false;
+                bool wants_case = false;
                 #ifdef MARAUDER_WDGWARS_UPLOAD
-                    wants_bar |= (wifi_scan_obj.currentScanMode == WIFI_SCAN_WDGWARS_UPLOAD);
+                    wants_case |= (wifi_scan_obj.currentScanMode == WIFI_SCAN_WDGWARS_UPLOAD);
                 #endif
                 #ifdef MARAUDER_FILE_SERVER_AP
-                    wants_bar |= (wifi_scan_obj.currentScanMode == WIFI_SCAN_FILE_SERVER_AP);
+                    wants_case |= (wifi_scan_obj.currentScanMode == WIFI_SCAN_FILE_SERVER_AP);
                 #endif
-                if (wants_bar &&
-                    currentTime - last_header_refresh_ms >= RIGUI_HEADER_REFRESH_MS) {
-                    last_header_refresh_ms = currentTime;
-                    menu_function_obj.updateStatusBar();
-                }
+                if (wants_case) rig_view_obj.tickCaseChrome(currentTime);
             #endif
             break;
         }
