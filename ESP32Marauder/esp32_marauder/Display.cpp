@@ -287,6 +287,8 @@ void Display::RunSetup() {
 
 void Display::tftDrawGraphObjects(byte x_scale)
 {
+  if (this->rig_owns_screen) return;   // the rig case owns this screen
+
   //draw the graph objects
   tft.fillRect(11, 5, x_scale+1, PKT_HALF, TFT_BLACK); // positive start point
   tft.fillRect(11, PKT_HALF + 1, x_scale+1, PKT_HALF - 1, TFT_BLACK); // negative start point
@@ -299,6 +301,8 @@ void Display::tftDrawGraphObjects(byte x_scale)
 
 void Display::tftDrawEapolColorKey(bool filter)
 {
+  if (this->rig_owns_screen) return;   // the rig case owns this screen
+
   //Display color key
   tft.setTextSize(1); tft.setTextColor(TFT_WHITE);
   tft.fillRect(14, 0, 15, 8, TFT_CYAN); tft.setCursor(30, 0); tft.println(" - EAPOL"); 
@@ -311,6 +315,8 @@ void Display::tftDrawEapolColorKey(bool filter)
 
 void Display::tftDrawColorKey()
 {
+  if (this->rig_owns_screen) return;   // the rig case owns this screen
+
   //Display color key
   tft.setTextSize(1); tft.setTextColor(TFT_WHITE);
   tft.fillRect(14, 0, 15, 8, TFT_GREEN); tft.setCursor(30, 0); tft.print(" - Beacons"); 
@@ -319,6 +325,8 @@ void Display::tftDrawColorKey()
 }
 
 void Display::tftDrawXScaleButtons(byte x_scale) {
+  if (this->rig_owns_screen) return;   // the rig case owns this screen
+
   tft.drawFastVLine(234, 0, 20, TFT_WHITE);
   tft.setCursor(208, 21); tft.setTextColor(TFT_WHITE); tft.setTextSize(1); tft.print("X Scale:"); tft.print(x_scale);
 
@@ -352,6 +360,8 @@ void Display::tftDrawXScaleButtons(byte x_scale) {
 
 void Display::tftDrawYScaleButtons(byte y_scale)
 {
+  if (this->rig_owns_screen) return;   // the rig case owns this screen
+
   tft.drawFastVLine(290, 0, 20, TFT_WHITE);
   tft.setCursor(265, 21); tft.setTextColor(TFT_WHITE); tft.setTextSize(1); tft.print("Y Scale:"); tft.print(y_scale);
 
@@ -384,6 +394,8 @@ void Display::tftDrawYScaleButtons(byte y_scale)
 }
 
 void Display::tftDrawChannelScaleButtons(int set_channel, bool lnd_an) {
+  if (this->rig_owns_screen) return;   // the rig case owns this screen
+
   #ifdef MARAUDER_PANCAKE
     TOP_FIXED_AREA_2 = lnd_an ? 48 : 64;
   #endif
@@ -444,6 +456,8 @@ void Display::tftDrawChannelScaleButtons(int set_channel, bool lnd_an) {
 }
 
 void Display::tftDrawChanHopButton(bool lnd_an, bool en) {
+  if (this->rig_owns_screen) return;   // the rig case owns this screen
+
   #ifdef MARAUDER_PANCAKE
     TOP_FIXED_AREA_2 = lnd_an ? 48 : 64;
   #endif
@@ -505,6 +519,8 @@ void Display::tftDrawChanHopButton(bool lnd_an, bool en) {
 }
 
 void Display::tftDrawExitScaleButtons(bool lnd_an) {
+  if (this->rig_owns_screen) return;   // the rig case owns this screen
+
   #ifdef MARAUDER_PANCAKE
     TOP_FIXED_AREA_2 = lnd_an ? 48 : 64;
   #endif
@@ -560,6 +576,8 @@ void Display::twoPartDisplay(String center_text)
 
 void Display::touchToExit()
 {
+  if (this->rig_owns_screen) return;   // the rig case owns this screen
+
   tft.setTextColor(TFT_BLACK, TFT_LIGHTGREY);
   tft.fillRect(0,32,HEIGHT_1,16, TFT_LIGHTGREY);
   tft.drawCentreString(text11,TFT_WIDTH / 2,32,2);

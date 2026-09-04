@@ -589,14 +589,14 @@ void loop()
   #ifdef HAS_BATTERY
     battery_obj.main(currentTime);
   #endif
-  if ((wifi_scan_obj.currentScanMode != WIFI_PACKET_MONITOR) ||
-      (mini)) {
-    #ifdef HAS_SCREEN
-      // RigUI is the entry point now. It handles our own screens and calls
-      // MenuFunctions::main() itself while the legacy tool tree has the display.
-      rig_ui_obj.main(currentTime);
-    #endif
-  }
+  // The packet monitor used to be excluded here because its old view was a
+  // blocking oscilloscope that owned the loop. It is an instrument in the rig
+  // case now and needs its tick like every other mode.
+  #ifdef HAS_SCREEN
+    // RigUI is the entry point now. It handles our own screens and calls
+    // MenuFunctions::main() itself while the legacy tool tree has the display.
+    rig_ui_obj.main(currentTime);
+  #endif
   #ifdef HAS_FLIPPER_LED
     flipper_led.main();
   #elif defined(XIAO_ESP32_S3)

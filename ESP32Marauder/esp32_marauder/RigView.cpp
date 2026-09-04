@@ -19,6 +19,12 @@ extern LinkedList<AccessPoint>* access_points;
 extern LinkedList<Station>*     stations;
 extern LinkedList<BleDevice>*   ble_devices;
 
+// The packet monitor's per-interval counters, incremented by the promiscuous
+// callback. They live at file scope in WiFiScan.cpp for the same reason.
+extern int num_beacon;
+extern int num_deauth;
+extern int num_probe;
+
 #ifdef HAS_GPS
     #include "GpsInterface.h"
     extern GpsInterface gps_obj;
@@ -100,7 +106,18 @@ const RVMode RV_MODES[] = {
     { WIFI_SCAN_GPS_DATA,       "GPS DATA",  1, RigView::SHEET },   // RunGPSInfo
     { GPS_TRACKER,              "GPS TRACK", 1, RigView::SHEET },   // RunGPSInfo(true) keeps logging
     { WIFI_SCAN_DISPLAY_AP_INFO,"HOST AP",   1, RigView::SHEET },   // displayAPStats
+    // Frame-counter sheets: these tune a channel, so they keep the ribbon.
+    { WIFI_SCAN_EAPOL,          "PMKID",     0, RigView::SHEET },   // renderRawStats
+    { WIFI_SCAN_ACTIVE_EAPOL,   "PMKID+",    0, RigView::SHEET },
+    { WIFI_SCAN_RAW_CAPTURE,    "RAW CAP",   0, RigView::SHEET },
+    // ---- TRACES: the packet monitor, rebuilt as three counters over time ----
+    { WIFI_PACKET_MONITOR,      "PACKETS",   0, RigView::TRACES },
 };
+
+// Is this one of the frame-counter sheets (EAPOL / PMKID / raw capture)?
+inline bool rvIsStatsSheet(uint8_t m) {
+    return m == WIFI_SCAN_EAPOL || m == WIFI_SCAN_ACTIVE_EAPOL || m == WIFI_SCAN_RAW_CAPTURE;
+}
 const RVMode* rvLookup(uint8_t m) {
     for (const RVMode& e : RV_MODES) if (e.mode == m) return &e;
     return nullptr;
@@ -177,12 +194,25 @@ void RigView::begin(uint8_t scan_mode) {
     meter_name_[0] = '\0';
     rank_sig_  = 0;
     sheet_sig_ = 0;
+    for (auto& t : trace_) for (auto& v : t) v = 0;
+    trace_n_ = 0;
+    trace_max_ = 1;
 
     need_full_ = true;
     drawn_ch_  = 0xFF;
     uint32_t now = millis();
     pulse_step_ms_ = rate_step_ms_ = last_frame_ms_ = last_feed_ms_ = now;
-    spec_peak_ms_ = meter_step_ms_ = now;
+    spec_peak_ms_ = meter_step_ms_ = trace_step_ms_ = now;
+}
+
+void RigView::openMode(uint8_t scan_mode) {
+    if (title(scan_mode) == nullptr) return;
+    begin(scan_mode);
+    drawFrame();
+    // need_full_ deliberately stays set: the scanner's own init still draws its
+    // banner and scale buttons after this returns, and the first tick repaints
+    // over whatever got through.
+    need_full_ = true;
 }
 
 void RigView::pushLine(const String& raw) {
@@ -365,7 +395,43 @@ void RigView::gather(uint32_t now) {
         case SHEET:
             // Facts move slowly; the paint hashes them and repaints on change.
             if (now - meter_step_ms_ >= 1000) { meter_step_ms_ = now; changes_++; }
+            // The frame-counter sheets are the exception: they move constantly,
+            // so drive the pulse from them.
+            if (rvIsStatsSheet(mode_)) {
+                static uint32_t pulsed = 0;
+                uint32_t f = wifi_scan_obj.mgmt_frames + wifi_scan_obj.data_frames;
+                if (f < pulsed) pulsed = 0;
+                uint32_t d = f - pulsed; pulsed = f;
+                pulse_accum_ += (uint16_t)(d > 60 ? 60 : d);
+            }
             break;
+
+        case TRACES: {
+            // One sample per GRAPH_REFRESH, exactly the cadence the old
+            // oscilloscope plotted at, then the counters are consumed. Nothing
+            // else reads them once the case owns this mode.
+            if (now - trace_step_ms_ < GRAPH_REFRESH) break;
+            trace_step_ms_ = now;
+            int v[3] = { num_beacon, num_deauth, num_probe };
+            num_beacon = num_deauth = num_probe = 0;
+            uint8_t mx = 1;
+            for (int k = 0; k < 3; k++) {
+                uint8_t s = (uint8_t)(v[k] > 255 ? 255 : (v[k] < 0 ? 0 : v[k]));
+                if (trace_n_ < TRACE_N) trace_[k][trace_n_] = s;
+                else {
+                    for (int i = 0; i < TRACE_N - 1; i++) trace_[k][i] = trace_[k][i + 1];
+                    trace_[k][TRACE_N - 1] = s;
+                }
+            }
+            if (trace_n_ < TRACE_N) trace_n_++;
+            for (int k = 0; k < 3; k++)
+                for (int i = 0; i < trace_n_; i++)
+                    if (trace_[k][i] > mx) mx = trace_[k][i];
+            trace_max_ = mx;
+            pulse_accum_ += (uint16_t)((v[0] + v[1] + v[2]) > 60 ? 60 : (v[0] + v[1] + v[2]));
+            changes_++;
+            break;
+        }
     }
 }
 
@@ -415,9 +481,13 @@ static void rvHeroLabels(uint8_t kind, uint8_t mode, const char*& a, const char*
     else if (kind == RigView::SPECTRUM)  { a = "BUSIEST"; b = "TOTAL";   c = "PAGE"; }
     else if (kind == RigView::SERIES)    { a = "NOW";     b = "MAX";     c = "AVG"; }
     else if (kind == RigView::METER)     { a = "RSSI";    b = "PEAK";    c = "TREND"; }
+    else if (kind == RigView::TRACES)    { a = "BEACONS"; b = "DEAUTH";  c = "PROBES"; }
     else if (kind == RigView::SHEET) {
         if      (mode == SHOW_INFO)                 { a = "FIRMWARE"; b = "SD";   c = "BATT"; }
         else if (mode == WIFI_SCAN_DISPLAY_AP_INFO) { a = "CLIENTS";  b = "CH";   c = "AP"; }
+        else if (mode == WIFI_SCAN_RAW_CAPTURE)     { a = "FRAMES";   b = "DATA"; c = "RSSI"; }
+        else if (mode == WIFI_SCAN_EAPOL ||
+                 mode == WIFI_SCAN_ACTIVE_EAPOL)    { a = "EAPOL";    b = "FULL"; c = "RSSI"; }
         else                                        { a = "SATS";     b = "ACC";  c = "FIX"; }
     }
 }
@@ -678,8 +748,30 @@ void RigView::drawHero() {
             break;
         }
 
+        case TRACES: {
+            uint32_t s[3] = {0, 0, 0};
+            for (int k = 0; k < 3; k++) for (int i = 0; i < trace_n_; i++) s[k] += trace_[k][i];
+            rvFmt(a, sizeof(a), s[0]); rvFmt(b, sizeof(b), s[1]); rvFmt(c, sizeof(c), s[2]);
+            ca = s[0] ? RV_GREEN : RV_DIM2;
+            cb = s[1] ? RV_RED   : RV_DIM2;
+            cc = s[2] ? RV_GOLD  : RV_DIM2;
+            break;
+        }
+
         case SHEET: {
-            if (mode_ == SHOW_INFO) {
+            if (rvIsStatsSheet(mode_)) {
+                if (mode_ == WIFI_SCAN_RAW_CAPTURE) {
+                    rvFmt(a, sizeof(a), wifi_scan_obj.mgmt_frames + wifi_scan_obj.data_frames);
+                    rvFmt(b, sizeof(b), wifi_scan_obj.data_frames);
+                } else {
+                    rvFmt(a, sizeof(a), wifi_scan_obj.eapol_frames);
+                    rvFmt(b, sizeof(b), wifi_scan_obj.getCompleteEapol());
+                    cb = wifi_scan_obj.getCompleteEapol() ? RV_GREEN : RV_DIM2;
+                }
+                if (wifi_scan_obj.max_rssi > -128) snprintf(c, sizeof(c), "%d", (int)wifi_scan_obj.max_rssi);
+                else                               snprintf(c, sizeof(c), "--");
+                ca = RV_GOLD;
+            } else if (mode_ == SHOW_INFO) {
                 snprintf(a, sizeof(a), "%s", WARROOM_RIG_VERSION);
                 #if defined(HAS_SD) && !defined(HAS_C5_SD)
                     if (sd_obj.supported) { String s = sd_obj.card_sz; if (s.length() > 5) s = s.substring(0, 5); snprintf(b, sizeof(b), "%sM", s.c_str()); }
@@ -734,6 +826,7 @@ void RigView::drawBody() {
         case SERIES:   drawSeries();   break;
         case METER:    drawMeter();    break;
         case SHEET:    drawSheet();    break;
+        case TRACES:   drawTraces();   break;
     }
 }
 
@@ -1078,7 +1171,21 @@ void RigView::drawSheet() {
         n++;
     };
 
-    if (mode_ == SHOW_INFO) {
+    if (rvIsStatsSheet(mode_)) {
+        auto& w = wifi_scan_obj;
+        put("MGMT",      String(w.mgmt_frames));
+        put("DATA",      String(w.data_frames));
+        put("BEACON",    String(w.beacon_frames));
+        put("PROBE REQ", String(w.req_frames));
+        put("PROBE RES", String(w.resp_frames));
+        put("DEAUTH",    String(w.deauth_frames), w.deauth_frames ? RV_RED : RV_INK);
+        put("EAPOL",     String(w.eapol_frames), w.eapol_frames ? RV_GOLD : RV_INK);
+        if (!rvIsStatsSheet(mode_) || mode_ != WIFI_SCAN_RAW_CAPTURE) {
+            uint32_t full = w.getCompleteEapol();
+            put("COMPLETE", String(full), full ? RV_GREEN : RV_DIM);
+        }
+        if (w.max_rssi > -128) put("RSSI", String((int)w.min_rssi) + " .. " + String((int)w.max_rssi));
+    } else if (mode_ == SHOW_INFO) {
         uint8_t sta[6], ap[6]; char m[20];
         wifi_scan_obj.getMAC(true, sta);
         wifi_scan_obj.getMAC(false, ap);
@@ -1147,6 +1254,58 @@ void RigView::drawSheet() {
             if ((int)v.length() > 26) v = v.substring(0, 26);
             tft.setTextColor(rows[r].color, TFT_BLACK);
             tft.drawString(v, 12, y + 10, 2);
+        }
+    }
+    tft.setTextDatum(TL_DATUM);
+}
+
+// ---- TRACES ----------------------------------------------------------------
+// The packet monitor. The stock view was an oscilloscope that plotted three
+// lines by drawing forward and erasing with black boxes shaped around the touch
+// buttons -- which is why it could not be reused. Same three counters, drawn as
+// stacked columns per sampling slot with a legend, newest at the right.
+
+void RigView::drawTraces() {
+    if (drawn_changes_ == changes_) return;
+    drawn_changes_ = changes_;
+
+    auto& tft = display_obj.tft;
+    const int by = RigTheme::TOOL_BODY_Y, bend = RigTheme::TOOL_BODY_END;
+    const int legendH = RigTheme::COMPACT ? 0 : 10;
+    const int floorY = bend - legendH;
+    const int topY = by + 2;
+    const int H = floorY - topY;
+    const int x0 = 8, span = SCREEN_WIDTH - 16;
+    const int cw = span / TRACE_N;
+    const uint16_t col[3] = { RV_GREEN, RV_RED, RV_GOLD };
+
+    tft.fillRect(0, by, SCREEN_WIDTH, bend - by, TFT_BLACK);
+    tft.drawFastHLine(x0, floorY, span, RV_OUT);
+
+    uint8_t mx = trace_max_ ? trace_max_ : 1;
+    for (int i = 0; i < trace_n_; i++) {
+        // Right-align the history so the newest slot sits at the right edge.
+        const int x = x0 + span - (trace_n_ - i) * cw;
+        int stack = 0;
+        for (int k = 0; k < 3; k++) {
+            uint8_t v = trace_[k][i];
+            if (!v) continue;
+            int h = (int)((int32_t)H * v / mx / 3);   // each trace gets a third
+            if (h < 1) h = 1;
+            tft.fillRect(x, floorY - stack - h, cw - 1 > 0 ? cw - 1 : 1, h, col[k]);
+            stack += h + 1;
+        }
+    }
+
+    if (!RigTheme::COMPACT) {
+        static const char* names[3] = { "beacon", "deauth", "probe" };
+        int lx = x0;
+        tft.setTextDatum(TL_DATUM);
+        for (int k = 0; k < 3; k++) {
+            tft.fillRect(lx, floorY + 4, 6, 4, col[k]);
+            tft.setTextColor(RV_DIM2, TFT_BLACK);
+            tft.drawString(names[k], lx + 9, floorY + 2, 1);
+            lx += 9 + (int)strlen(names[k]) * 6 + 12;
         }
     }
     tft.setTextDatum(TL_DATUM);

@@ -44,8 +44,16 @@ public:
         SPECTRUM,   // one bar per channel (Channel Summary)
         SERIES,     // a scrolling time series (Channel / BT Analyzer)
         METER,      // one signal, big: Fox Hunt
-        SHEET,      // label / value rows: Device Info, GPS, Host AP
+        SHEET,      // label / value rows: Device Info, GPS, Host AP, EAPOL stats
+        TRACES,     // three counters over time: the packet monitor
     };
+
+    // Paint the case for a mode that is starting, before its radio setup blocks.
+    // StartScan calls this at its very top: the Wi-Fi bring-up that follows can
+    // take a few hundred milliseconds, and whatever is on the screen stays there
+    // for all of it -- which is how the Marauder status bar the menu had just
+    // drawn became the thing you see when a tool opens.
+    void openMode(uint8_t scan_mode);
 
     // ---- Case chrome for the rig's own modules ------------------------------
     // Upload and the File Server are state machines that draw their own bodies
@@ -140,6 +148,13 @@ private:
     uint32_t rank_sig_  = 0;              // hash of what was drawn last
     uint32_t sheet_sig_ = 0;
 
+    // ---- TRACES: beacons / deauths / probes per sampling slot --------------
+    static const uint8_t TRACE_N = 56;
+    uint8_t  trace_[3][TRACE_N] = {};
+    uint8_t  trace_n_ = 0;
+    uint8_t  trace_max_ = 1;              // scale, decays so a spike doesn't stick
+    uint32_t trace_step_ms_ = 0;
+
     void begin(uint8_t scan_mode);
     void drainBuffer();
     void pushLine(const String& raw);
@@ -158,6 +173,7 @@ private:
     void drawSeries();                // SERIES
     void drawMeter();                 // METER
     void drawSheet();                 // SHEET
+    void drawTraces();                // TRACES
 };
 
 extern RigView rig_view_obj;

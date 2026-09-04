@@ -102,6 +102,13 @@ class Display
     bool exit_draw = false;
     bool headless_mode = false;
 
+    // Set while a scan drawn by the rig instrument case (RigView) is running.
+    // The Marauder chrome below -- scale buttons, colour keys, the tap-to-exit
+    // banner -- is drawn by the scanners at their own init, which happens after
+    // the case has been painted and would land on top of it. Gating it in one
+    // place beats guarding eighteen call sites in WiFiScan.
+    bool rig_owns_screen = false;
+
     uint8_t TOP_FIXED_AREA_2 = 48;
     uint8_t print_delay_1, print_delay_2 = 10;
     uint8_t current_banner_pos = SCREEN_WIDTH;

@@ -54,7 +54,14 @@ LinkedList<BleDevice>* ble_devices;
 extern WiFiScan wifi_scan_obj;
 #ifdef HAS_SCREEN
   #include "RigView.h"
-  static inline bool rigOwnsScreen() { return RigView::title(wifi_scan_obj.currentScanMode) != nullptr; }
+  // display_obj.rig_owns_screen is set at the top of StartScan, before the radio
+  // bring-up, so the guards below already hold while a scan is initialising.
+  // The current mode is checked as well for the screens that set it directly
+  // without going through StartScan (Device Info).
+  static inline bool rigOwnsScreen() {
+      return display_obj.rig_owns_screen ||
+             RigView::title(wifi_scan_obj.currentScanMode) != nullptr;
+  }
 #else
   static inline bool rigOwnsScreen() { return false; }
 #endif
@@ -2080,7 +2087,18 @@ bool WiFiScan::scanning() {
 }
 
 // Function to prepare to run a specific scan
-void WiFiScan::StartScan(uint8_t scan_mode, uint16_t color) {  
+void WiFiScan::StartScan(uint8_t scan_mode, uint16_t color) {
+  #ifdef HAS_SCREEN
+    // Claim the screen for the rig case before anything else. initWiFi() below
+    // can block for a few hundred milliseconds, and whatever is on the display
+    // stays there for all of it -- which is how the status bar the menu drew on
+    // its way out became "the Marauder UI you see when a tool opens". Painting
+    // the case here means that wait is spent looking at the case instead, and
+    // the flag keeps the scanner's own chrome off it during init.
+    display_obj.rig_owns_screen = (RigView::title(scan_mode) != nullptr);
+    if (display_obj.rig_owns_screen) rig_view_obj.openMode(scan_mode);
+  #endif
+
   this->initWiFi(scan_mode);
   if (scan_mode == WIFI_SCAN_OFF) {
     #ifdef HAS_ACT_LED
@@ -8510,6 +8528,7 @@ void WiFiScan::displayAnalyzerString(String str) {
 
 void WiFiScan::renderRawStats() {
   #ifdef HAS_SCREEN
+   if (!rigOwnsScreen()) {   // the case draws these counters as its stats sheet
     uint8_t line_count = 0;
     display_obj.tft.fillRect(0,
                             (STATUS_BAR_WIDTH * 2) + 1 + EXT_BUTTON_WIDTH,
@@ -8546,7 +8565,7 @@ void WiFiScan::renderRawStats() {
     display_obj.tft.setTextColor(TFT_RED, TFT_BLACK);
     display_obj.tft.println(F("\nDEAUTH TX: FALSE"));
     }
-
+   }
   #endif
 
   Serial.println("     Mgmt: " + (String)this->mgmt_frames);
@@ -9588,7 +9607,19 @@ void WiFiScan::main(uint32_t currentTime)
   {
     #ifdef HAS_SCREEN
       #ifdef HAS_ILI9341
-        packetMonitorMain(currentTime);
+        if (rigOwnsScreen()) {
+          // The case samples num_beacon / num_deauth / num_probe on its own
+          // cadence and draws them. All that is left here is the on-screen exit
+          // for touch boards; the old packetMonitorMain() was a blocking loop
+          // built around scale buttons that no longer exist.
+          if (this->checkAnalyzerButtons(currentTime) == EXIT_BUTTON_INDEX) {
+            this->StartScan(WIFI_SCAN_OFF);
+            this->orient_display = true;
+            return;
+          }
+        } else {
+          packetMonitorMain(currentTime);
+        }
       #endif
     #endif
   }
